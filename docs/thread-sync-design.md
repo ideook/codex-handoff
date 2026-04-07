@@ -4,19 +4,19 @@ This document defines the intended sync architecture for `codex-handoff`.
 
 The target use case is serial handoff across machines for one human using Codex. The thing being handed off is not only a summary and not only a transcript. The remote payload must preserve:
 
-- the original Codex session source needed to reconstruct a thread
+- the optional original Codex session source used for full thread reconstruction
 - the derived handoff artifacts needed to resume work efficiently
 - the normalized metadata needed to make the thread visible again in Codex on another machine
 
 ## Design decision
 
-Default sync includes the original session document.
+Default sync excludes the original session document. Raw source sync is opt-in via `--include-raw-threads`.
 
 The remote source of truth for a thread is a normalized thread bundle, not a copied local SQLite database and not a copied local `session_index.jsonl`.
 
 That bundle contains:
 
-- raw source session content
+- optional raw source session content
 - derived handoff files
 - normalized metadata for Codex-local materialization
 
@@ -75,7 +75,7 @@ Rules:
 
 - `.codex-handoff/threads/<thread-id>/...` is the persistent local mirror for that thread
 - root `latest.md`, `handoff.json`, and `raw/session.jsonl` are a materialized view of the currently selected thread
-- `source/` stores the original session source plus normalized Codex metadata needed for local reconstruction
+- `source/` stores optional original session source plus normalized Codex metadata needed for local reconstruction
 - the existing reader CLI continues to read the root view
 
 ## Thread bundle contents
@@ -103,7 +103,7 @@ Each thread bundle should contain:
   - normalized reader evidence for that thread
   - should include the important extracted evidence plus the recent conversational tail
 - `source/rollout.jsonl.gz`
-  - compressed original Codex session jsonl
+  - optional compressed original Codex session jsonl when raw thread export is enabled
 - `source/index-entry.json`
   - normalized representation of the `session_index.jsonl` entry required for local materialization
 - `source/thread-record.json`
@@ -163,7 +163,7 @@ On the source machine:
 2. Read the original session jsonl path for each thread.
 3. Extract normalized metadata for `session_index.jsonl` and the SQLite `threads` row.
 4. Generate thread-specific `latest.md`, `handoff.json`, and `raw/session.jsonl`.
-5. Compress the original session jsonl as `source/rollout.jsonl.gz`.
+5. When raw thread export is enabled, compress the original session jsonl as `source/rollout.jsonl.gz`.
 6. Upload the thread bundle to the repo-specific prefix in R2.
 
 ## Pull and materialize model
@@ -172,7 +172,7 @@ On another machine:
 
 1. Pull the repo prefix from R2.
 2. Store each remote thread bundle under `.codex-handoff/threads/<thread-id>/`.
-3. Restore `source/rollout.jsonl.gz` into the appropriate `~/.codex/sessions/...` location.
+3. If present, restore `source/rollout.jsonl.gz` into the appropriate `~/.codex/sessions/...` location.
 4. Upsert `source/index-entry.json` into local `~/.codex/session_index.jsonl`.
 5. Upsert `source/thread-record.json` into local `~/.codex/state_5.sqlite`.
 6. Read `current-thread.json`.

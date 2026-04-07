@@ -28,7 +28,7 @@ The key product terms are:
 - `remote`: the synchronized backend, first implemented by Cloudflare R2
 - `agent`: the local background sync process installed on each machine
 - `repo`: the user-facing attachment unit
-- `thread bundle`: the sync unit for one Codex thread, containing raw source, normalized metadata, and derived handoff artifacts
+- `thread bundle`: the sync unit for one Codex thread, containing optional raw source, normalized metadata, and derived handoff artifacts
 - `attach`: opt a repository into handoff sync and connect it to local thread discovery
 - `resume`: reconstruct Codex context from synced memory files
 
@@ -55,7 +55,7 @@ The product should not behave like a generic filesystem sync tool. It should syn
 4. Codex attaches the current repository.
 5. Codex reads the local thread list and session index to discover repo-related threads.
 6. Codex enables and starts the local sync agent.
-7. The agent exports thread bundles under `.codex-handoff/threads/<thread-id>/` with both source logs and handoff files, then pushes them to the repo's R2 prefix in the background.
+7. The agent exports thread bundles under `.codex-handoff/threads/<thread-id>/` with handoff files and optional source logs, then pushes them to the repo's R2 prefix in the background.
 
 ### Machine 2
 
@@ -167,7 +167,7 @@ The local agent should own:
 - debounced sync to the repo's R2 prefix
 - local pull on start, attach, login, wake, and periodic health intervals
 - pre-push remote head checks
-- materializing pulled source logs into local `~/.codex/sessions/...`
+- materializing pulled source logs into local `~/.codex/sessions/...` when raw thread export is enabled
 - upserting pulled normalized metadata into local `~/.codex/session_index.jsonl` and `~/.codex/state_5.sqlite`
 - materializing the selected thread into the root `.codex-handoff/` files after pull
 - conflict-safe writes using last-modified metadata, revision markers, and local conflict snapshots
@@ -249,13 +249,14 @@ Implemented today:
 - local thread discovery plus thread-bundle export/import primitives
 - repo-scoped sync push/pull/now/watch CLI scaffolding
 - detached local `agent start/status/stop/restart` lifecycle around `sync watch`
+- login auto-start registration on macOS with `launchd`
+- login auto-start registration on Windows with Task Scheduler and Startup folder fallback
+- shared heuristic-only background summary policy for unattended watch runs
 - bundled `codex-handoff` skill install support for Codex bootstrap flows
 
 Not yet implemented:
 
 - npm package
-- background sync agent registration
-- auto-start registration
 - richer remote repo matching prompts and state reconciliation
 - production-grade conflict resolution
 - Codex-driven summarization as the default background flow

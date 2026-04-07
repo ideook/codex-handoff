@@ -28,15 +28,29 @@ Current scope in this repository:
 - Cloudflare R2 remote auth profile management
 - repo enable/attach metadata and managed `AGENTS.md` block updates
 - local thread discovery and thread-bundle export/import primitives
-- repo-scoped sync push/pull/now/watch command scaffolding
+- repo-scoped sync push/pull/now command scaffolding
+- global Codex sessions watcher service with repo routing
+- detached background watch service lifecycle plus login auto-start on Windows and macOS
+- shared background-safe heuristic summary policy for unattended watch runs
 - npm package skeleton with Node bin wrapper and postinstall skill install
 
 Next scope being designed:
 
 - npm wrapper package
-- background sync agent registration
 - richer conflict handling and remote repo matching UX
 - Codex-driven summary generation as the default background path
+
+## Platform support model
+
+`codex-handoff` now uses a Node-led watch architecture:
+
+- one global watch service observes `~/.codex/sessions/**`
+- rollout files are routed to managed repos using `session_meta.payload.cwd`
+- repo sync work is coalesced and executed per repo with single-flight scheduling
+- Windows and macOS use the same watch service, with OS-specific auto-start wrappers only
+- the existing sync engine is still reused for `sync now` work triggered by the watcher
+
+Interactive flows such as `status`, `resume`, `search`, `extract`, `threads export`, and `sync now` still honor the requested summary mode, while unattended watch-triggered syncs force the safe heuristic path.
 
 ## Target handoff flow
 
@@ -44,17 +58,17 @@ The intended product experience is serial handoff across machines, not generic c
 
 The unit the user thinks about is the repository, but the unit that actually syncs is the thread bundle:
 
-- the original Codex session jsonl for a thread
+- the optional original Codex session jsonl for a thread
 - normalized thread metadata discovered from the local thread list and session index
 - a summarized handoff view for that same thread
 
 The target flow is:
 
 1. On machine A, install `codex-handoff`, authenticate to Cloudflare R2, and attach the current repo.
-2. `codex-handoff` scans the local Codex thread list and session index, finds threads whose `cwd` matches the repo, and exports thread bundles with both source logs and handoff files.
+2. `codex-handoff` scans the local Codex thread list and session index, finds threads whose `cwd` matches the repo, and exports thread bundles with handoff files plus optional source logs.
 3. The local agent syncs those thread bundles plus the repo-local `.codex-handoff/` view to R2.
 4. On machine B, install `codex-handoff`, authenticate to the same R2 remote, attach the same repo, and pull the latest thread bundles into `.codex-handoff/threads/`.
-5. `codex-handoff` restores the selected thread's original session source and normalized metadata into local `~/.codex/` storage so the thread is visible in Codex.
+5. When raw source logs were exported, `codex-handoff` restores the selected thread's original session source and normalized metadata into local `~/.codex/` storage so the thread is visible in Codex.
 6. `codex-handoff` materializes the selected thread into the root `.codex-handoff/` files so Codex can immediately read `latest.md` and continue.
 
 The product should optimize for one person moving between machines, so pull-before-push and conflict snapshots matter more than real-time multi-user collaboration.
@@ -71,6 +85,7 @@ The product should optimize for one person moving between machines, so pull-befo
 - `extract`: print exact raw records for a specific session or turn id
 - `threads scan`: list local Codex threads whose `cwd` matches the current repo
 - `threads export`: export matching local Codex threads under `.codex-handoff/threads/<thread-id>/`
+- raw rollout archives are skipped by default; pass `--include-raw-threads` when you need `*.rollout.jsonl.gz` for full thread reconstruction
 - `threads import`: materialize a bundled thread back into the local `~/.codex/` store
 - `remote login r2`: register a Cloudflare R2 backend profile and store credentials locally
 - `remote login r2 --from-clipboard`: read a copied credential block from the OS clipboard
@@ -84,8 +99,8 @@ The product should optimize for one person moving between machines, so pull-befo
 - `sync push`: upload the local `.codex-handoff/` tree to the configured remote prefix
 - `sync pull`: download the remote `.codex-handoff/` tree and optionally materialize a thread into local Codex state
 - `sync now`: export local repo threads and push them immediately
-- `sync watch`: poll local Codex/session changes and push updates continuously
-- `agent start|status|stop|restart`: manage a detached local watcher for an enabled repo
+- `sync watch`: run the global Codex sessions watch service in the foreground
+- `agent start|status|stop|restart`: manage the detached global watch service
 - `skill install|status`: install the bundled `codex-handoff` skill into the local Codex skills directory
 
 ## Interpreting "Sync This Repo"
@@ -135,7 +150,7 @@ schemas/
 
 The root `.codex-handoff/` files are the active materialized view.
 Thread-specific copies live under `.codex-handoff/threads/<thread-id>/`.
-The `source/` files are the planned materialization input for local Codex thread visibility on another machine.
+The `source/` files are the planned materialization input for local Codex thread visibility on another machine. `rollout.jsonl.gz` is optional and only appears when raw thread export is enabled.
 
 ## AGENTS bootstrap
 
@@ -216,7 +231,7 @@ npm install -g @brdg/codex-handoff
 codex-handoff install
 ```
 
-The global install wrapper forwards into the bundled Python engine and runs an npm postinstall step that copies the bundled `codex-handoff` skill into `~/.codex/skills/codex-handoff`.
+The global install now runs as a pure Node package and uses an npm postinstall step that copies the bundled `codex-handoff` skill into `~/.codex/skills/codex-handoff`.
 
 ## Planned sync model
 

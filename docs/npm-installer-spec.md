@@ -12,7 +12,7 @@ The npm layer should make the product feel like:
 - authenticate once on a machine
 - attach the current repository
 - discover that repo's Codex threads
-- sync thread bundles, including original session source and the repo-local `.codex-handoff/` view, to Cloudflare R2
+- sync thread bundles, including optional original session source and the repo-local `.codex-handoff/` view, to Cloudflare R2
 - automatically pull the latest thread bundles on the next machine before work resumes
 
 ## Why npm
@@ -29,7 +29,7 @@ An npm package is a reasonable outer installer because:
 - npm package name: `@brdg/codex-handoff`
 - executable name: `codex-handoff`
 - install mode: global install
-- preferred inner runtime: Node wrapper plus the existing Python engine
+- preferred inner runtime: pure Node runtime
 - postinstall behavior: copy the bundled `codex-handoff` skill into `~/.codex/skills/codex-handoff`
 
 ## Recommended split
@@ -120,7 +120,7 @@ Where:
 - `manifest.json` records repo identity, known machines, revision markers, and sync metadata
 - `thread-index.json` stores discovered thread metadata
 - `current-thread.json` points to the thread to materialize into the root `.codex-handoff/` view
-- each `threads/<thread-id>/` directory stores the original source session, normalized Codex-local metadata, and the summarized handoff data
+- each `threads/<thread-id>/` directory stores the summarized handoff data, normalized Codex-local metadata, and optional original source session
 
 ## Service registration targets
 

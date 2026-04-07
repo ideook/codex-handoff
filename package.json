@@ -7,17 +7,21 @@
     "codex-handoff": "./npm/bin/codex-handoff.js"
   },
   "scripts": {
-    "postinstall": "node ./npm/postinstall.js"
+    "postinstall": "node ./npm/postinstall.js",
+    "test:node": "node --test npm/service/watch_service.test.js npm/lib/reader.test.js npm/lib/summarize.test.js npm/lib/sync.test.js npm/cli.test.js"
   },
   "files": [
-    "codex_handoff/*.py",
     "skills/codex-handoff/**",
     "README.md",
     "AGENTS.md",
-    "pyproject.toml",
     "npm/**"
   ],
   "engines": {
     "node": ">=18"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.8.0",
+    "chokidar": "^5.0.0",
+    "fast-xml-parser": "^5.3.2"
   }
 }
