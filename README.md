@@ -19,53 +19,46 @@ can resume on another machine with the right context already in place.
 - thread bundles preserved separately under `.codex-handoff/threads/`
 - Cloudflare R2 support out of the box
 
-## Install
+## Start With Codex
 
-```bash
-npm install -g @brdg/codex-handoff
-codex-handoff setup
+The easiest way to use `codex-handoff` is to tell Codex what you want in plain
+language.
+
+Install and start sync for this repo:
+
+```text
+Install `@brdg/codex-handoff` and start sync for this repository.
+Do not stop at package installation. Finish the setup so it is ready to run.
 ```
 
-Run `setup` inside the repository you want to attach.
+Set up this repo after the package is already installed:
 
-If you reinstall or upgrade the npm package:
-
-- npm install will stop any running background agent and watcher
-- the package will be replaced
-- the agent will restart automatically if it had been running
-- run `codex-handoff setup` again in each attached repo to reconcile repo state
-
-## Common Flows
-
-Set up this repo:
-
-```bash
-codex-handoff setup
+```text
+Set up codex-handoff sync for this repository.
 ```
 
 Receive work on another machine:
 
-```bash
-codex-handoff receive
+```text
+Receive this repository with codex-handoff on another machine.
 ```
 
 Run a one-shot sync:
 
-```bash
-codex-handoff sync now
+```text
+Sync this repository with codex-handoff.
 ```
 
 Enable background sync:
 
-```bash
-codex-handoff agent enable
-codex-handoff agent start
+```text
+Enable codex-handoff push automation for this repository.
 ```
 
 Detach this repo:
 
-```bash
-codex-handoff uninstall
+```text
+Remove codex-handoff from this repository.
 ```
 
 ## How It Works
@@ -103,7 +96,7 @@ Background sync is driven by a global watcher:
 - `uninstall`
   detach the repo from codex-handoff management
 
-For the full command surface, see [docs/README.md](docs/README.md).
+For the full command surface, see [docs/command-reference.md](docs/command-reference.md).
 
 ## Remote Backend
 
@@ -124,6 +117,10 @@ codex-handoff setup
 ```
 
 ## Development
+
+If you prefer direct CLI commands instead of prompt-first use, see:
+
+- [Command Reference](docs/command-reference.md)
 
 Before publishing to npm, test from a tarball:
 
