@@ -3,6 +3,7 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { restartServicesAfterPackageInstall } = require("./install-lifecycle");
 
 const packageRoot = path.resolve(__dirname, "..");
 const sourceSkillDir = path.join(packageRoot, "skills", "codex-handoff");
@@ -94,5 +95,14 @@ function quoteVbsString(value) {
   return `"${value.replace(/"/g, '""')}"`;
 }
 
-copySkill();
-installCodexBinWrappers();
+async function main() {
+  copySkill();
+  installCodexBinWrappers();
+  try {
+    await restartServicesAfterPackageInstall();
+  } catch (error) {
+    console.warn(`[codex-handoff] postinstall warning: ${error.message}`);
+  }
+}
+
+void main();

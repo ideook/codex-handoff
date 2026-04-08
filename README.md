@@ -1,261 +1,159 @@
-# codex-handoff
+<p align="center">
+  <h1 align="center">codex-handoff</h1>
+  <p align="center">Keep Codex work portable across machines, repos, and sessions.</p>
+</p>
 
-`codex-handoff` is a local reader CLI for bootstrapping and restoring Codex context from synchronized memory files.
+<p align="center">
+  <img alt="node >=18" src="https://img.shields.io/badge/node-%E2%89%A518-2f6f44">
+  <img alt="backend cloudflare r2" src="https://img.shields.io/badge/backend-Cloudflare%20R2-f48120">
+  <img alt="platform macOS windows" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-4b5563">
+  <img alt="license mit" src="https://img.shields.io/badge/license-MIT-111827">
+</p>
 
-The workflow is built around three file roles:
+`codex-handoff` watches repo-related Codex sessions, builds repo-scoped handoff
+memory under `.codex-handoff/`, and syncs that state to a remote backend so you
+can resume on another machine with the right context already in place.
 
-- `.codex-handoff/latest.md`: short bootstrap summary that should always be read first
-- `.codex-handoff/handoff.json`: structured state for deterministic restore
-- `.codex-handoff/raw/*.jsonl`: raw turn evidence searched on demand
+## Why
 
-## Quick start
+- repo-scoped instead of one giant session pool
+- built for one-person, cross-machine handoff
+- background sync while Codex is open
+- thread bundles preserved separately under `.codex-handoff/threads/`
+- Cloudflare R2 support out of the box
 
-```bash
-codex-handoff --repo . status
-codex-handoff --repo . resume --goal "지난번 scene evidence 정리 이어서"
-codex-handoff --repo . search "scene-evidence"
-codex-handoff --repo . extract --session sess-video-2026-04-06 --turn turn-003
-codex-handoff remote login r2 --profile default
-codex-handoff remote whoami
-```
-
-## Current scope vs next scope
-
-Current scope in this repository:
-
-- local reader CLI
-- local memory bootstrap model
-- Cloudflare R2 remote auth profile management
-- repo enable/attach metadata and managed `AGENTS.md` block updates
-- local thread discovery and thread-bundle export/import primitives
-- repo-scoped sync push/pull/now command scaffolding
-- global Codex sessions watcher service with repo routing
-- detached background watch service lifecycle plus login auto-start on Windows and macOS
-- shared background-safe heuristic summary policy for unattended watch runs
-- npm package skeleton with Node bin wrapper and postinstall skill install
-
-Next scope being designed:
-
-- npm wrapper package
-- richer conflict handling and remote repo matching UX
-- Codex-driven summary generation as the default background path
-
-## Platform support model
-
-`codex-handoff` now uses a Node-led watch architecture:
-
-- one global watch service observes `~/.codex/sessions/**`
-- rollout files are routed to managed repos using `session_meta.payload.cwd`
-- repo sync work is coalesced and executed per repo with single-flight scheduling
-- Windows and macOS use the same watch service, with OS-specific auto-start wrappers only
-- the existing sync engine is still reused for `sync now` work triggered by the watcher
-
-Interactive flows such as `status`, `resume`, `search`, `extract`, `threads export`, and `sync now` still honor the requested summary mode, while unattended watch-triggered syncs force the safe heuristic path.
-
-## Target handoff flow
-
-The intended product experience is serial handoff across machines, not generic collaboration sync.
-
-The unit the user thinks about is the repository, but the unit that actually syncs is the thread bundle:
-
-- the optional original Codex session jsonl for a thread
-- normalized thread metadata discovered from the local thread list and session index
-- a summarized handoff view for that same thread
-
-The target flow is:
-
-1. On machine A, install `codex-handoff`, authenticate to Cloudflare R2, and attach the current repo.
-2. `codex-handoff` scans the local Codex thread list and session index, finds threads whose `cwd` matches the repo, and exports thread bundles with handoff files plus optional source logs.
-3. The local agent syncs those thread bundles plus the repo-local `.codex-handoff/` view to R2.
-4. On machine B, install `codex-handoff`, authenticate to the same R2 remote, attach the same repo, and pull the latest thread bundles into `.codex-handoff/threads/`.
-5. When raw source logs were exported, `codex-handoff` restores the selected thread's original session source and normalized metadata into local `~/.codex/` storage so the thread is visible in Codex.
-6. `codex-handoff` materializes the selected thread into the root `.codex-handoff/` files so Codex can immediately read `latest.md` and continue.
-
-The product should optimize for one person moving between machines, so pull-before-push and conflict snapshots matter more than real-time multi-user collaboration.
-
-## Commands
-
-- `status`: show which memory artifacts are present and how much raw evidence is available
-- `install`: bootstrap the repo in one flow by enabling sync and optionally starting the detached agent
-- `doctor`: show local prerequisites and current codex-handoff setup health
-- `enable`: attach the current repo to codex-handoff sync, save repo metadata, and patch `AGENTS.md`
-- `resume`: build a compressed restore pack from `latest.md`, `handoff.json`, and ranked raw evidence
-- `context-pack`: same restore engine as `resume`, but named for explicit pack generation
-- `search`: search raw jsonl evidence without reading whole files into Codex
-- `extract`: print exact raw records for a specific session or turn id
-- `threads scan`: list local Codex threads whose `cwd` matches the current repo
-- `threads export`: export matching local Codex threads under `.codex-handoff/threads/<thread-id>/`
-- raw rollout archives are skipped by default; pass `--include-raw-threads` when you need `*.rollout.jsonl.gz` for full thread reconstruction
-- `threads import`: materialize a bundled thread back into the local `~/.codex/` store
-- `remote login r2`: register a Cloudflare R2 backend profile and store credentials locally
-- `remote login r2 --from-clipboard`: read a copied credential block from the OS clipboard
-- `remote login r2 --from-env`: read credentials from environment variables for scripted setup
-- `remote login r2 --dotenv ~/.codex-handoff/.env.local`: read credentials from the default global dotenv file
-- `remote login r2 --show-setup-info --open-dashboard`: show the Cloudflare R2 dashboard URL and open it in a browser
-- `remote whoami`: inspect the active remote profile
-- `remote validate`: test stored R2 credentials with a signed API call
-- `remote logout`: remove the local remote profile and its stored secret
-- `remote repos`: list remote repo slugs already present in R2, optionally with remote metadata
-- `sync push`: upload the local `.codex-handoff/` tree to the configured remote prefix
-- `sync pull`: download the remote `.codex-handoff/` tree and optionally materialize a thread into local Codex state
-- `sync now`: export local repo threads and push them immediately
-- `sync watch`: run the global Codex sessions watch service in the foreground
-- `agent start|status|stop|restart`: manage the detached global watch service
-- `skill install|status`: install the bundled `codex-handoff` skill into the local Codex skills directory
-
-## Interpreting "Sync This Repo"
-
-When the user asks Codex to "sync this repo", the product should split that intent into two phases:
-
-1. Align the current repo state with the remote.
-2. Ask whether to enable push automation.
-
-The default interpretation should be:
-
-- if the repo is not attached yet, run `codex-handoff --repo . install --skip-agent-start --skip-autostart`
-- if the repo is already attached, run `codex-handoff --repo . sync now`
-- if the user is clearly asking to continue on another machine, run `codex-handoff --repo . receive --skip-agent-start --skip-autostart`
-
-After the state is aligned, Codex should ask a short follow-up such as:
-
-`Push 자동화를 켤까요?`
-
-Only if the user agrees should Codex enable auto-start and start the watcher:
-
-- `codex-handoff --repo . agent enable`
-- `codex-handoff --repo . agent start`
-
-## Repository layout
-
-```text
-.codex-handoff/
-  latest.md
-  handoff.json
-  raw/
-    session-2026-04-06.jsonl
-  threads/
-    <thread-id>/
-      manifest.json
-      latest.md
-      handoff.json
-      raw/
-        session.jsonl
-      source/
-        rollout.jsonl.gz
-        index-entry.json
-        thread-record.json
-schemas/
-  handoff.schema.json
-```
-
-The root `.codex-handoff/` files are the active materialized view.
-Thread-specific copies live under `.codex-handoff/threads/<thread-id>/`.
-The `source/` files are the planned materialization input for local Codex thread visibility on another machine. `rollout.jsonl.gz` is optional and only appears when raw thread export is enabled.
-
-## AGENTS bootstrap
-
-The repository includes an `AGENTS.md` that instructs Codex to:
-
-1. Read `.codex-handoff/latest.md` before substantive work.
-2. Use `codex-handoff resume` when the user asks to continue work from another machine.
-3. Search raw jsonl through the CLI instead of loading entire files directly.
-
-## Remote Backend
-
-Use `remote` as the product term for the synchronized storage backend. The first supported provider is Cloudflare R2.
-
-The current product model is intentionally single-remote:
-
-- one user-level remote profile only
-- one shared backend bucket per user setup
-- projects are separated inside that one remote by repo slug, not by separate remote profiles
-
-Why `remote`:
-
-- it keeps the local reader and the sync backend separate
-- it leaves room for other providers later without renaming the user-facing concept
-- it matches commands like `remote login`, `remote validate`, and later `sync push/pull`
-
-### R2 authentication model
-
-R2 does not use a client certificate flow for this use case. The standard auth model is:
-
-- `account_id`
-- `access_key_id`
-- `secret_access_key`
-- `bucket`
-- endpoint `https://<account_id>.r2.cloudflarestorage.com`
-- region `auto`
-
-The CLI uses a login-style flow and stores secrets locally with OS-native protection:
-
-- macOS: Keychain via the `security` CLI
-- Windows: DPAPI-protected blob via PowerShell
-
-The shared metadata is stored in a local config file:
-
-- cross-platform default: `~/.codex-handoff/config.json`
-
-### Example
-
-```bash
-codex-handoff remote login r2 \
-  --profile default \
-  --account-id <cloudflare-account-id> \
-  --bucket <bucket-name> \
-  --access-key-id <r2-access-key-id>
-
-codex-handoff remote validate --profile default
-codex-handoff remote whoami
-```
-
-On login, the CLI performs a signed `ListObjectsV2` request against R2 unless `--skip-validate` is passed.
-
-Recommended prompt-friendly auth path:
-
-- Copy a small credential block to the clipboard.
-- Ask Codex to run `codex-handoff remote login r2 --from-clipboard`.
-- Then ask Codex to run `codex-handoff --repo . enable --login-if-needed --auth-source clipboard --sync-now`.
-
-This keeps the secret out of the Codex chat transcript while still allowing a one-prompt setup flow.
-
-If you prefer a file-based path, keep the secret in the global codex-handoff dotenv file and use:
-
-- `codex-handoff remote login r2 --dotenv ~/.codex-handoff/.env.local`
-- `codex-handoff --repo . install --login-if-needed --auth-source dotenv`
-
-The npm skeleton now supports the intended install shape:
+## Install
 
 ```bash
 npm install -g @brdg/codex-handoff
-codex-handoff install
+codex-handoff setup
 ```
 
-The global install now runs as a pure Node package and uses an npm postinstall step that copies the bundled `codex-handoff` skill into `~/.codex/skills/codex-handoff`.
+Run `setup` inside the repository you want to attach.
 
-## Planned sync model
+If you reinstall or upgrade the npm package:
 
-The current code now implements the first CLI scaffolding for thread-bundle export/import and remote sync. The next implementation target is:
+- npm install will stop any running background agent and watcher
+- the package will be replaced
+- the agent will restart automatically if it had been running
+- run `codex-handoff setup` again in each attached repo to reconcile repo state
 
-- discover repo-related threads from the local Codex thread list and session index
-- read the original session jsonl path for each thread
-- generate thread-specific `latest.md`, `handoff.json`, and `raw/session.jsonl`
-- store normalized `session_index` and SQLite thread metadata alongside the source session
-- store those under `.codex-handoff/threads/<thread-id>/`
-- upload thread bundles to a repo-specific prefix in R2
-- pull thread bundles on another machine, materialize the local Codex thread source and metadata, and then materialize one thread back to the root `.codex-handoff/` view
-- add background watcher/service registration and remote repo matching prompts
+## Common Flows
 
-## Agent-first install UX docs
+Set up this repo:
 
-The installer and operating experience are specified here:
+```bash
+codex-handoff setup
+```
 
-- [docs/agent-install-ux.md](docs/agent-install-ux.md)
-- [docs/agent-install-prompts.md](docs/agent-install-prompts.md)
-- [docs/npm-installer-spec.md](docs/npm-installer-spec.md)
+Receive work on another machine:
 
-## `handoff.json` schema
+```bash
+codex-handoff receive
+```
 
-The JSON Schema lives at [schemas/handoff.schema.json](schemas/handoff.schema.json).
+Run a one-shot sync:
 
-The sample handoff file lives at [.codex-handoff/handoff.json](.codex-handoff/handoff.json).
+```bash
+codex-handoff sync now
+```
+
+Enable background sync:
+
+```bash
+codex-handoff agent enable
+codex-handoff agent start
+```
+
+Detach this repo:
+
+```bash
+codex-handoff uninstall
+```
+
+## How It Works
+
+`codex-handoff` keeps three main kinds of state:
+
+- `.codex-handoff/latest.md`
+  short bootstrap summary
+- `.codex-handoff/handoff.json`
+  structured restore state
+- `.codex-handoff/raw/*.jsonl`
+  searchable raw evidence
+
+Background sync is driven by a global watcher:
+
+- it watches `~/.codex/sessions/**`
+- routes rollout changes to the matching repo using `session_meta.payload.cwd`
+- updates repo thread bundles locally
+- pushes the repo-scoped handoff tree to the configured remote prefix
+
+## Primary Commands
+
+- `setup`
+  bootstrap or reconcile a repo
+- `receive`
+  restore synced work on another machine
+- `status`
+  inspect local handoff state
+- `resume`
+  build a restore pack from local handoff state
+- `search`
+  search raw handoff evidence
+- `sync now`
+  perform a one-shot export and push
+- `uninstall`
+  detach the repo from codex-handoff management
+
+For the full command surface, see [docs/README.md](docs/README.md).
+
+## Remote Backend
+
+The first supported backend is Cloudflare R2.
+
+Prompt-friendly auth path:
+
+```bash
+codex-handoff remote login r2 --from-clipboard
+codex-handoff setup
+```
+
+File-based auth path:
+
+```bash
+codex-handoff remote login r2 --dotenv ~/.codex-handoff/.env.local
+codex-handoff setup
+```
+
+## Development
+
+Before publishing to npm, test from a tarball:
+
+```bash
+npm pack
+npm install -g ./brdg-codex-handoff-0.1.0.tgz
+codex-handoff setup
+```
+
+Run tests:
+
+```bash
+npm run test:node
+```
+
+## Docs
+
+- [Manual Index](docs/README.md)
+- [Command Reference](docs/command-reference.md)
+- [Operations Guide](docs/operations-guide.md)
+- [Agent Install UX](docs/agent-install-ux.md)
+- [Prompt Pack](docs/agent-install-prompts.md)
+- [npm Installer Spec](docs/npm-installer-spec.md)
+- [Global Watcher Architecture](docs/global-watcher-architecture.md)
+- [Thread Sync Design](docs/thread-sync-design.md)
+- [Handoff JSON Schema](schemas/handoff.schema.json)
+
+## License
+
+MIT

@@ -109,7 +109,7 @@ These commands are the recommended external UX for the future agent package.
 
 ### Install and lifecycle
 
-- `codex-handoff install`
+- `codex-handoff setup`
 - `codex-handoff uninstall`
 - `codex-handoff doctor`
 - `codex-handoff skill install`
@@ -218,15 +218,18 @@ The install prompt that a user pastes into Codex should be intentionally short. 
 
 1. Check whether the product is already installed.
 2. If missing, install it via the declared package manager command.
-3. Run `codex-handoff doctor`.
-4. Run remote login if no valid profile exists.
-5. If the user asked to "sync" the current repo, align the current state first.
-6. When the repo is not attached, use `install --skip-agent-start --skip-autostart`.
-7. When the repo is already attached, use `sync now`.
-8. When the user is resuming on another machine, use `receive --skip-agent-start --skip-autostart`.
-9. Print a short state-alignment summary with repo slug, discovered thread count, remote prefix, and sync health.
-10. Ask a short follow-up such as `Push 자동화를 켤까요?`
-11. Only after explicit user approval should Codex register background auto-start and start the local agent.
+3. Do not stop after package install. The same task must continue into repo setup.
+4. Resolve the target repo path and use `--repo <path>` explicitly when needed.
+5. Run `codex-handoff doctor`.
+6. Run remote login if no valid profile exists.
+7. If the user asked to "sync" the current repo, align the current state first.
+8. When the repo is not attached, use `setup --skip-agent-start --skip-autostart`.
+9. When the repo is already attached, use `sync now`.
+10. When the user is resuming on another machine, use `receive --skip-agent-start --skip-autostart`.
+11. Print a short state-alignment summary with repo slug, discovered thread count, remote prefix, and sync health.
+12. Ask a short follow-up such as `Do you want to enable automatic push sync?`
+13. Only after explicit user approval should Codex register background auto-start and start the local agent.
+14. If the npm package was just reinstalled or upgraded, npm install should stop and restart any running background agent automatically. After that, still run `codex-handoff setup` so the new version can reconcile repo state.
 
 ## Non-goals for v1
 

@@ -65,10 +65,20 @@ Owns:
 
 ```text
 npm install -g @brdg/codex-handoff
-codex-handoff install --repo <path>
+codex-handoff setup --repo <path>
 ```
 
-The `install` command should internally cover:
+This two-step flow is the intended product distribution model. Design install behavior assuming end users first get the package through the global npm install, then run the CLI `setup` command for repo setup.
+
+Before npm publish, use the packed tarball as the development verification path:
+
+```text
+npm pack
+npm install -g ./brdg-codex-handoff-<version>.tgz
+codex-handoff setup --repo <path>
+```
+
+The `setup` command should internally cover:
 
 1. `doctor`
 2. skill install when missing
@@ -85,6 +95,8 @@ The `install` command should internally cover:
 
 - If Node is missing, Codex should install or prompt for Node first.
 - If the package is already installed, rerun health checks instead of reinstalling.
+- If the package was reinstalled or upgraded while the background agent is still running, npm install should stop the running agent/watch services before replacing package files and restart the agent automatically after installation when it had been running.
+- After package reinstall or upgrade, `codex-handoff setup` should still reconcile repo state on the new version.
 - If the agent is already registered, restart or validate it instead of duplicating it.
 - If the machine is not authenticated, prompt only for the missing R2 fields.
 - If the repo is already attached, confirm status instead of attaching twice.

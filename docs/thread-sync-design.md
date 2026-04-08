@@ -149,7 +149,7 @@ The sync unit is the thread bundle.
 
 Attach flow:
 
-1. User runs `codex-handoff install --repo <path>` or `codex-handoff attach --repo <path>`.
+1. User runs `codex-handoff setup --repo <path>` or `codex-handoff attach --repo <path>`.
 2. `codex-handoff` records the repo slug and remote prefix.
 3. `codex-handoff threads scan --repo <path>` reads local thread metadata.
 4. Threads whose `cwd` matches the repo are candidates for sync.
@@ -188,7 +188,7 @@ This lets both recovery paths work:
 
 Recommended future command surface:
 
-- `codex-handoff install --repo <path>`
+- `codex-handoff setup --repo <path>`
 - `codex-handoff attach --repo <path>`
 - `codex-handoff threads scan --repo <path>`
 - `codex-handoff threads list --repo <path>`

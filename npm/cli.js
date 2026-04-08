@@ -20,6 +20,7 @@ const {
 } = require("./lib/reader");
 const { loadDefaultR2Profile, loadConfig, saveConfig } = require("./lib/runtime-config");
 const { ensureGlobalDotenvTemplate, readClipboardText, readR2CredentialsFromDotenv, readR2CredentialsFromEnv } = require("./lib/remote-auth");
+const { findScriptProcessPids } = require("./lib/process-utils");
 const { storeSecret, deleteSecret } = require("./lib/secrets");
 const { installSkill, installedSkillPath } = require("./lib/skills");
 const {
@@ -40,11 +41,16 @@ const {
   inferRepoSlug,
   loadRepoState,
   materializedRootPaths,
+  removeAgentsBlock,
+  removeMemoryDirGitignoreEntry,
   registerRepoMapping,
   saveRepoState,
+  unregisterRepoMapping,
 } = require("./lib/workspace");
 const { deleteR2Object, getR2Object, listR2Objects, putR2Object, validateR2Credentials } = require("./lib/r2");
-const { configPath, resolveCodexHome, resolveConfigDir } = require("./service/common");
+const { configPath, lifecycleLockPath, packageVersionFromHere, resolveCodexHome, resolveConfigDir } = require("./service/common");
+
+const PACKAGE_VERSION = packageVersionFromHere(__filename);
 
 function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
@@ -86,7 +92,10 @@ function main(argv = process.argv.slice(2)) {
   }
 
   if (args.command === "agent") {
-    return Promise.resolve(handleAgent(args, repoPath, memoryDir, configDir, codexHome)).then((payload) => {
+    const action = ["start", "stop", "restart", "enable", "disable"].includes(args.subcommand || "")
+      ? withLifecycleLock(configDir, () => handleAgent(args, repoPath, memoryDir, configDir, codexHome))
+      : Promise.resolve(handleAgent(args, repoPath, memoryDir, configDir, codexHome));
+    return Promise.resolve(action).then((payload) => {
       printJson(payload);
       return 0;
     });
@@ -100,12 +109,16 @@ function main(argv = process.argv.slice(2)) {
     return Promise.resolve(handleEnable(repoPath, memoryDir, configDir, codexHome, args));
   }
 
-  if (args.command === "install") {
-    return Promise.resolve(handleInstall(repoPath, memoryDir, configDir, codexHome, args));
+  if (args.command === "setup") {
+    return Promise.resolve(withLifecycleLock(configDir, () => handleSetup(repoPath, memoryDir, configDir, codexHome, args)));
+  }
+
+  if (args.command === "uninstall") {
+    return Promise.resolve(withLifecycleLock(configDir, () => handleUninstall(repoPath, memoryDir, configDir, codexHome, args)));
   }
 
   if (args.command === "receive") {
-    return Promise.resolve(handleReceive(repoPath, memoryDir, configDir, codexHome, args));
+    return Promise.resolve(withLifecycleLock(configDir, () => handleReceive(repoPath, memoryDir, configDir, codexHome, args)));
   }
 
   if (args.command === "threads") {
@@ -160,30 +173,7 @@ async function handleRemote(args, configDir) {
     return 0;
   }
   if (args.subcommand === "login" && args.remoteProvider === "r2") {
-    let creds;
-    if (args.fromClipboard) creds = readR2CredentialsFromDotenvFromClipboard();
-    else if (args.fromEnv) creds = readR2CredentialsFromEnv(process.env);
-    else creds = readR2CredentialsFromDotenv(args.dotenv || ensureGlobalDotenvTemplate());
-    const secretInfo = storeSecret("default", creds.secret_access_key, configDir);
-    payload.default_profile = "default";
-    payload.profiles = {
-      default: {
-        provider: "cloudflare-r2",
-        account_id: creds.account_id,
-        bucket: creds.bucket,
-        endpoint: creds.endpoint,
-        region: "auto",
-        memory_prefix: "projects/",
-        access_key_id: creds.access_key_id,
-        secret_backend: secretInfo.secret_backend,
-        secret_ref: secretInfo.secret_ref,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        validated_at: new Date().toISOString(),
-      },
-    };
-    saveConfig(configDir, payload);
-    printJson({ profile: "default", provider: "cloudflare-r2", bucket: creds.bucket, endpoint: creds.endpoint });
+    printJson(loginDefaultR2Profile(configDir, args));
     return 0;
   }
   if (args.subcommand === "repos") {
@@ -297,12 +287,13 @@ async function handleEnable(repoPath, memoryDir, configDir, codexHome, args) {
   return 0;
 }
 
-async function handleInstall(repoPath, memoryDir, configDir, codexHome, args) {
+async function handleSetup(repoPath, memoryDir, configDir, codexHome, args) {
+  ensureDefaultProfileForInstall(configDir, args);
   const enableResult = await performEnable(repoPath, memoryDir, configDir, codexHome, args);
   if (enableResult.selection_required) {
     printJson({
       repo: repoPath,
-      install: true,
+      setup: true,
       selection_required: true,
       enable_result: enableResult,
       sync_action: null,
@@ -343,17 +334,62 @@ async function handleInstall(repoPath, memoryDir, configDir, codexHome, args) {
   }
   let agentResult = null;
   if (!args.skipAgentStart) {
-    agentResult = await handleAgent({ ...args, subcommand: "start" }, repoPath, memoryDir, configDir, codexHome);
+    agentResult = await ensureInstalledAgentRunningLatestVersion(args, repoPath, memoryDir, configDir, codexHome);
   }
   printJson({
     repo: repoPath,
-    install: true,
+    setup: true,
     enable_result: enableResult,
     sync_action: syncAction,
     sync_result: syncResult,
     autostart_result: autostartResult,
     autostart_error: autostartError,
     agent_result: agentResult,
+  });
+  return 0;
+}
+
+async function handleUninstall(repoPath, memoryDir, configDir, _codexHome, _args) {
+  const config = loadConfig(configDir);
+  const repoState = loadRepoState(memoryDir);
+  const unregistered = unregisterRepoMapping(config, repoPath);
+  saveConfig(configDir, unregistered.config);
+
+  const agentsResult = removeAgentsBlock(repoPath);
+  const gitignoreResult = removeMemoryDirGitignoreEntry(repoPath, memoryDir);
+
+  let agentAction = "unchanged";
+  let autostartAction = "unchanged";
+  if (unregistered.remaining_repo_count === 0) {
+    const agentState = liveServiceState(configDir);
+    if (agentState?.pid) {
+      await stopAgentService(configDir);
+      agentAction = "stopped";
+    } else {
+      agentAction = "not_running";
+    }
+    const autostart = autostartStatus(repoState.repo_slug, configDir);
+    if (autostart.enabled) {
+      disableAutostart(repoState.repo_slug, configDir);
+      autostartAction = "disabled";
+    } else {
+      autostartAction = "not_enabled";
+    }
+  }
+
+  printJson({
+    repo: repoPath,
+    uninstall: true,
+    detached: true,
+    repo_removed: unregistered.removed,
+    remaining_repo_count: unregistered.remaining_repo_count,
+    agent_action: agentAction,
+    autostart_action: autostartAction,
+    agents_block_removed: agentsResult.removed,
+    gitignore_entry_removed: gitignoreResult.removed,
+    memory_dir: memoryDir,
+    memory_dir_preserved: true,
+    remote_profile_preserved: true,
   });
   return 0;
 }
@@ -387,7 +423,7 @@ async function handleReceive(repoPath, memoryDir, configDir, codexHome, args) {
   }
   let agentResult = null;
   if (!args.skipAgentStart) {
-    agentResult = await handleAgent({ ...args, subcommand: "start" }, repoPath, memoryDir, configDir, codexHome);
+    agentResult = await ensureInstalledAgentRunningLatestVersion(args, repoPath, memoryDir, configDir, codexHome);
   }
   printJson({
     repo: repoPath,
@@ -525,7 +561,7 @@ async function handleAgent(args, repoPath, memoryDir, configDir, codexHome) {
     return { ...statusPayload(repoPath, repoState, state, configDir), autostart: autostartStatus(repoState.repo_slug, configDir) };
   }
   if (args.subcommand === "stop") {
-    stopAgentService(configDir);
+    await stopAgentService(configDir);
     return statusPayload(repoPath, repoState, null, configDir);
   }
   if (args.subcommand === "start") {
@@ -548,6 +584,7 @@ async function handleAgent(args, repoPath, memoryDir, configDir, codexHome) {
       codex_home: codexHome,
       initial_sync: true,
       phase: "idle",
+      package_version: PACKAGE_VERSION,
       log_path: path.join(configDir, "logs", "agent-service.log"),
       event_log_path: path.join(configDir, "logs", "watch-events.log"),
       raw_event_log_path: path.join(configDir, "logs", "watch-raw-events.log"),
@@ -557,7 +594,10 @@ async function handleAgent(args, repoPath, memoryDir, configDir, codexHome) {
     };
   }
   if (args.subcommand === "restart") {
-    stopAgentService(configDir);
+    const stopResult = await stopAgentService(configDir);
+    if (stopResult.running) {
+      throw new Error(`Timed out waiting for the existing agent to stop: ${stopResult.remaining_pids.join(", ")}`);
+    }
     const started = startAgentService({ cwd: repoPath, configDir, codexHome });
     return {
       restarted: true,
@@ -574,6 +614,7 @@ async function handleAgent(args, repoPath, memoryDir, configDir, codexHome) {
       codex_home: codexHome,
       initial_sync: true,
       phase: "idle",
+      package_version: PACKAGE_VERSION,
       log_path: path.join(configDir, "logs", "agent-service.log"),
       event_log_path: path.join(configDir, "logs", "watch-events.log"),
       raw_event_log_path: path.join(configDir, "logs", "watch-raw-events.log"),
@@ -629,6 +670,8 @@ function doctor(repoPath, memoryDir, configDir, codexHome) {
 
 function statusPayload(repoPath, repoState, state, configDir) {
   const running = Boolean(state?.pid && isRunning(state.pid));
+  const runningPackageVersion = state?.package_version || null;
+  const restartRequired = Boolean(running && runningPackageVersion && PACKAGE_VERSION && runningPackageVersion !== PACKAGE_VERSION);
   return {
     mode: "global",
     repo_slug: repoState.repo_slug,
@@ -643,6 +686,9 @@ function statusPayload(repoPath, repoState, state, configDir) {
     codex_home: state?.codex_home || resolveCodexHome(),
     initial_sync: true,
     phase: state?.phase || "idle",
+    installed_package_version: PACKAGE_VERSION,
+    running_package_version: runningPackageVersion,
+    restart_required: restartRequired,
     watcher_running: Boolean(state?.watcher?.pid && running),
     log_path: path.join(configDir, "logs", "agent-service.log"),
     event_log_path: path.join(configDir, "logs", "watch-events.log"),
@@ -654,13 +700,87 @@ function statusPayload(repoPath, repoState, state, configDir) {
 
 function liveServiceState(configDir) {
   const state = serviceState(configDir);
-  if (!state?.pid) {
+  if (state?.pid && isRunning(state.pid)) {
+    return state;
+  }
+  const fallbackPid = findScriptProcessPids("agent_service.js", { configDir })[0] || null;
+  if (!fallbackPid) {
     return null;
   }
-  if (!isRunning(state.pid)) {
+  return {
+    ...(state || {}),
+    pid: fallbackPid,
+  };
+}
+
+async function ensureInstalledAgentRunningLatestVersion(args, repoPath, memoryDir, configDir, codexHome) {
+  const state = liveServiceState(configDir);
+  if (state?.pid) {
+    const restarted = await handleAgent({ ...args, subcommand: "restart" }, repoPath, memoryDir, configDir, codexHome);
+    return {
+      install_restarted_agent: true,
+      previous_pid: state.pid,
+      previous_package_version: state.package_version || null,
+      ...restarted,
+    };
+  }
+  const started = await handleAgent({ ...args, subcommand: "start" }, repoPath, memoryDir, configDir, codexHome);
+  return {
+    install_restarted_agent: false,
+    ...started,
+  };
+}
+
+async function withLifecycleLock(configDir, fn, { timeoutMs = 15000, pollMs = 100 } = {}) {
+  const lockPath = lifecycleLockPath(configDir);
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    try {
+      const handle = fs.openSync(lockPath, "wx");
+      try {
+        fs.writeFileSync(handle, `${JSON.stringify({ pid: process.pid, acquired_at: new Date().toISOString() })}\n`, "utf8");
+      } finally {
+        fs.closeSync(handle);
+      }
+      try {
+        return await fn();
+      } finally {
+        try {
+          fs.rmSync(lockPath, { force: true });
+        } catch {
+          // Ignore lock cleanup failures.
+        }
+      }
+    } catch (error) {
+      if (error?.code !== "EEXIST") {
+        throw error;
+      }
+      const existing = readLifecycleLock(lockPath);
+      if (existing?.pid && !isRunning(existing.pid)) {
+        try {
+          fs.rmSync(lockPath, { force: true });
+        } catch {
+          // Ignore stale lock cleanup failure and retry.
+        }
+        continue;
+      }
+      await sleep(pollMs);
+    }
+  }
+  throw new Error("Timed out waiting for another codex-handoff lifecycle operation to finish.");
+}
+
+function readLifecycleLock(lockPath) {
+  try {
+    return JSON.parse(fs.readFileSync(lockPath, "utf8"));
+  } catch {
     return null;
   }
-  return state;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function requireRepoState(memoryDir) {
@@ -1012,6 +1132,7 @@ function parseArgs(argv) {
     summaryMode: null,
     includeRawThreads: null,
     noInitialSync: false,
+    loginIfNeeded: false,
     skipAgentStart: false,
     skipAutostart: false,
     skipSkillInstall: false,
@@ -1068,6 +1189,7 @@ function parseArgs(argv) {
     } else if (arg === "--skip-raw-threads") out.includeRawThreads = false;
     else if (arg === "--include-raw-threads") out.includeRawThreads = true;
     else if (arg === "--no-initial-sync") out.noInitialSync = true;
+    else if (arg === "--login-if-needed") out.loginIfNeeded = true;
     else if (arg === "--skip-agent-start") out.skipAgentStart = true;
     else if (arg === "--skip-autostart") out.skipAutostart = true;
     else if (arg === "--skip-skill-install") out.skipSkillInstall = true;
@@ -1123,7 +1245,8 @@ function printHelp() {
       "  remote login r2|whoami|validate|logout\n" +
       "  remote repos|purge-prefix|purge-thread\n" +
       "  enable\n" +
-      "  install\n" +
+      "  setup\n" +
+      "  uninstall\n" +
       "  receive\n" +
       "  threads scan|export|import|cleanup\n" +
       "  agent start|stop|status|restart|enable|disable\n" +
@@ -1137,6 +1260,90 @@ function printHelp() {
 
 function cryptoRandomId() {
   return require("node:crypto").randomUUID();
+}
+
+function ensureDefaultProfileForInstall(configDir, args) {
+  const config = loadConfig(configDir);
+  const profileName = config.default_profile || "default";
+  if (config.profiles?.[profileName]) {
+    return { profile_name: profileName, created: false };
+  }
+  try {
+    return loginDefaultR2Profile(configDir, args);
+  } catch (error) {
+    const source = resolveAuthSource(args);
+    const dotenvPath = source === "dotenv" ? path.resolve(args.dotenv || ensureGlobalDotenvTemplate()) : null;
+    const hint = source === "dotenv"
+      ? `Add your R2 credentials to ${dotenvPath} or run \`codex-handoff remote login r2\` first.`
+      : `Run \`codex-handoff remote login r2\` first or provide credentials via --auth-source ${source}.`;
+    throw new Error(`Remote profile not found: ${profileName}. ${hint} ${error.message}`);
+  }
+}
+
+function loginDefaultR2Profile(configDir, args) {
+  const payload = loadConfig(configDir);
+  const profileName = payload.default_profile || "default";
+  const source = resolveAuthSource(args);
+  const creds = readR2CredentialsForSource(source, args);
+  assertValidR2Credentials(creds, source, args);
+  const secretInfo = storeSecret(profileName, creds.secret_access_key, configDir);
+  payload.default_profile = profileName;
+  payload.profiles = {
+    ...(payload.profiles || {}),
+    [profileName]: {
+      provider: "cloudflare-r2",
+      account_id: creds.account_id,
+      bucket: creds.bucket,
+      endpoint: creds.endpoint,
+      region: "auto",
+      memory_prefix: "projects/",
+      access_key_id: creds.access_key_id,
+      secret_backend: secretInfo.secret_backend,
+      secret_ref: secretInfo.secret_ref,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      validated_at: new Date().toISOString(),
+    },
+  };
+  saveConfig(configDir, payload);
+  return {
+    profile: profileName,
+    provider: "cloudflare-r2",
+    bucket: creds.bucket,
+    endpoint: creds.endpoint,
+    auth_source: source,
+  };
+}
+
+function resolveAuthSource(args) {
+  if (args.fromClipboard) return "clipboard";
+  if (args.fromEnv) return "env";
+  return args.authSource || "dotenv";
+}
+
+function readR2CredentialsForSource(source, args) {
+  if (source === "clipboard") {
+    return readR2CredentialsFromDotenvFromClipboard();
+  }
+  if (source === "env") {
+    return readR2CredentialsFromEnv(process.env);
+  }
+  if (source === "dotenv") {
+    return readR2CredentialsFromDotenv(args.dotenv || ensureGlobalDotenvTemplate());
+  }
+  throw new Error(`Unsupported auth source: ${source}`);
+}
+
+function assertValidR2Credentials(creds, source, args) {
+  const missing = ["account_id", "bucket", "access_key_id", "secret_access_key"].filter((field) => !String(creds?.[field] || "").trim());
+  if (!missing.length) {
+    return;
+  }
+  if (source === "dotenv") {
+    const dotenvPath = path.resolve(args.dotenv || ensureGlobalDotenvTemplate());
+    throw new Error(`Missing R2 credentials in ${dotenvPath}: ${missing.join(", ")}`);
+  }
+  throw new Error(`Missing R2 credentials from ${source}: ${missing.join(", ")}`);
 }
 
 function readR2CredentialsFromDotenvFromClipboard() {
@@ -1157,5 +1364,8 @@ module.exports = {
 if (require.main === module) {
   Promise.resolve(main()).then((code) => {
     process.exitCode = code;
+  }).catch((error) => {
+    process.stderr.write(`${error.message}\n`);
+    process.exitCode = 1;
   });
 }

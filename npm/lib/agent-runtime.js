@@ -3,7 +3,7 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 
 const { agentServiceStatePath, readJsonFile } = require("../service/common");
-const { isProcessRunning, terminateProcess } = require("./process-utils");
+const { findScriptProcessPids, forceTerminateProcess, isProcessRunning, terminateProcess, waitForProcessesExit } = require("./process-utils");
 
 function serviceState(configDir) {
   return readJsonFile(agentServiceStatePath(configDir), null);
@@ -31,12 +31,34 @@ function startAgentService({ configDir, codexHome, cwd = process.cwd() }) {
   return { command, args, pid: child.pid };
 }
 
-function stopAgentService(configDir) {
+async function stopAgentService(configDir, { timeoutMs = 5000 } = {}) {
   const state = serviceState(configDir);
-  if (!state?.pid) return { stopped: false, running: false };
-  terminateProcess(state.pid);
+  const pids = new Set();
+  if (state?.pid) {
+    pids.add(state.pid);
+  }
+  for (const pid of findScriptProcessPids("agent_service.js", { configDir })) {
+    pids.add(pid);
+  }
+  if (!pids.size) return { stopped: false, running: false };
+  for (const pid of pids) {
+    terminateProcess(pid);
+  }
+  let waitResult = await waitForProcessesExit([...pids], { timeoutMs });
+  if (!waitResult.exited && waitResult.remaining.length) {
+    for (const pid of waitResult.remaining) {
+      forceTerminateProcess(pid);
+    }
+    waitResult = await waitForProcessesExit(waitResult.remaining, { timeoutMs: Math.min(timeoutMs, 2000) });
+  }
   clearServiceState(configDir);
-  return { stopped: true, running: false, pid: state.pid };
+  return {
+    stopped: waitResult.exited,
+    running: !waitResult.exited,
+    pid: state?.pid || null,
+    stopped_pids: [...pids].sort((a, b) => a - b),
+    remaining_pids: waitResult.remaining,
+  };
 }
 
 module.exports = {

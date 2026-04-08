@@ -120,6 +120,9 @@ test("CLI defaults to skipping raw thread archives and allows explicit opt-in", 
 
   const included = parseArgs(["threads", "export", "--include-raw-threads"]);
   assert.equal(included.includeRawThreads, true);
+
+  const loginIfNeeded = parseArgs(["setup", "--login-if-needed"]);
+  assert.equal(loginIfNeeded.loginIfNeeded, true);
 });
 
 test("new repo state defaults to raw thread archives disabled", () => {
@@ -164,4 +167,116 @@ test("CLI status/search/resume/sync status work through the Node entrypoint", ()
   assert.equal(payload.repo_slug, "fixture-remote");
   assert.equal(payload.thread_count, 1);
   assert.equal(payload.sync_health.status, "ok");
+});
+
+test("CLI setup reports a friendly error when the default remote profile is missing", () => {
+  const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-handoff-setup-"));
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-handoff-config-"));
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-handoff-home-"));
+
+  let failure = null;
+  try {
+    execFileSync(process.execPath, [cliPath, "--repo", repoDir, "setup"], {
+      cwd: path.join(__dirname, ".."),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        HOME: homeDir,
+        CODEX_HANDOFF_CONFIG_DIR: configDir,
+        NODE_NO_WARNINGS: "1",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (error) {
+    failure = error;
+  }
+
+  assert.ok(failure);
+  assert.match(String(failure.stderr || ""), /Remote profile not found: default\./);
+  assert.match(String(failure.stderr || ""), /Add your R2 credentials to/);
+  assert.doesNotMatch(String(failure.stderr || ""), /npm\/cli\.js:/);
+});
+
+test("CLI install command is no longer supported", () => {
+  const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-handoff-install-cmd-"));
+
+  let failure = null;
+  try {
+    execFileSync(process.execPath, [cliPath, "--repo", repoDir, "install"], {
+      cwd: path.join(__dirname, ".."),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        NODE_NO_WARNINGS: "1",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (error) {
+    failure = error;
+  }
+
+  assert.ok(failure);
+  assert.match(String(failure.stderr || ""), /Not yet ported to Node: install/);
+});
+
+test("CLI uninstall detaches the repo and preserves local memory", () => {
+  const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-handoff-uninstall-"));
+  const memoryDir = path.join(repoDir, ".codex-handoff");
+  fs.mkdirSync(memoryDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(memoryDir, "repo.json"),
+    JSON.stringify({ repo_slug: "fixture-remote", remote_profile: "default" }, null, 2) + "\n",
+    "utf8",
+  );
+  fs.writeFileSync(
+    path.join(repoDir, "AGENTS.md"),
+    [
+      "# Local instructions",
+      "",
+      "<!-- codex-handoff:start -->",
+      "managed block",
+      "<!-- codex-handoff:end -->",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  fs.writeFileSync(path.join(repoDir, ".gitignore"), ".codex-handoff/\n", "utf8");
+
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-handoff-config-"));
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-handoff-home-"));
+  fs.writeFileSync(
+    path.join(configDir, "config.json"),
+    JSON.stringify(
+      {
+        default_profile: "default",
+        profiles: {},
+        repos: {
+          [repoDir]: { repo_slug: "fixture-remote" },
+        },
+      },
+      null,
+      2,
+    ) + "\n",
+    "utf8",
+  );
+
+  const output = execFileSync(process.execPath, [cliPath, "--repo", repoDir, "uninstall"], {
+    cwd: path.join(__dirname, ".."),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: homeDir,
+      CODEX_HANDOFF_CONFIG_DIR: configDir,
+      NODE_NO_WARNINGS: "1",
+    },
+  });
+
+  const payload = JSON.parse(output);
+  assert.equal(payload.uninstall, true);
+  assert.equal(payload.detached, true);
+  assert.equal(payload.repo_removed, true);
+  assert.equal(payload.memory_dir_preserved, true);
+  assert.equal(fs.existsSync(memoryDir), true);
+  assert.doesNotMatch(fs.readFileSync(path.join(repoDir, "AGENTS.md"), "utf8"), /codex-handoff:start/);
+  assert.equal(fs.existsSync(path.join(repoDir, ".gitignore")), false);
 });

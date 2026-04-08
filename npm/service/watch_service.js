@@ -7,6 +7,7 @@ const chokidar = require("chokidar");
 
 const {
   normalizeComparablePath,
+  packageVersionFromHere,
   resolveCodexHome,
   resolveConfigDir,
   runtimeDir,
@@ -22,6 +23,7 @@ const { extractCanonicalMessages } = require("../lib/summarize");
 const { syncChangedThreads } = require("../lib/sync");
 
 const DEFAULT_DEBOUNCE_MS = 1500;
+const PACKAGE_VERSION = packageVersionFromHere(__filename);
 
 function parseArgs(argv) {
   const result = {
@@ -168,6 +170,7 @@ async function main() {
     ...readExistingState(statePath),
     pid: process.pid,
     started_at: serviceStartAt,
+    package_version: PACKAGE_VERSION,
     config_dir: options.configDir,
     codex_home: options.codexHome,
     watch_root: sessionsRoot,
@@ -342,6 +345,7 @@ async function main() {
         ...readExistingState(statePath),
         pid: process.pid,
         started_at: serviceStartAt,
+        package_version: PACKAGE_VERSION,
         config_dir: options.configDir,
         codex_home: options.codexHome,
         watch_root: sessionsRoot,

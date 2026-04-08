@@ -117,6 +117,20 @@ function registerRepoMapping(configPayload, repoPath, repoState) {
   return configPayload;
 }
 
+function unregisterRepoMapping(configPayload, repoPath) {
+  const repos = configPayload.repos || (configPayload.repos = {});
+  const key = normalizeCwd(repoPath);
+  const existed = Object.prototype.hasOwnProperty.call(repos, key);
+  if (existed) {
+    delete repos[key];
+  }
+  return {
+    config: configPayload,
+    removed: existed,
+    remaining_repo_count: Object.keys(repos).length,
+  };
+}
+
 function ensureAgentsBlock(repoPath, repoState) {
   const agentsPath = path.join(repoPath, "AGENTS.md");
   const existing = fs.existsSync(agentsPath) ? fs.readFileSync(agentsPath, "utf8") : "";
@@ -133,6 +147,25 @@ function ensureAgentsBlock(repoPath, repoState) {
   return agentsPath;
 }
 
+function removeAgentsBlock(repoPath) {
+  const agentsPath = path.join(repoPath, "AGENTS.md");
+  if (!fs.existsSync(agentsPath)) {
+    return { path: agentsPath, removed: false, exists: false };
+  }
+  const existing = fs.readFileSync(agentsPath, "utf8");
+  if (!existing.includes(MANAGED_BLOCK_START) || !existing.includes(MANAGED_BLOCK_END)) {
+    return { path: agentsPath, removed: false, exists: true };
+  }
+  const pattern = new RegExp(`\\n?${escapeRegExp(MANAGED_BLOCK_START)}[\\s\\S]*?${escapeRegExp(MANAGED_BLOCK_END)}\\n?`, "m");
+  const updated = existing.replace(pattern, "\n").replace(/\n{3,}/g, "\n\n").trimEnd();
+  if (updated) {
+    fs.writeFileSync(agentsPath, `${updated}\n`, "utf8");
+  } else {
+    fs.rmSync(agentsPath, { force: true });
+  }
+  return { path: agentsPath, removed: true, exists: true };
+}
+
 function ensureMemoryDirGitignored(repoPath, memoryDir) {
   const relative = path.relative(repoPath, memoryDir).split(path.sep).join("/");
   if (!relative || relative.startsWith("..")) {
@@ -147,6 +180,34 @@ function ensureMemoryDirGitignored(repoPath, memoryDir) {
     fs.writeFileSync(gitignorePath, next, "utf8");
   }
   return gitignorePath;
+}
+
+function removeMemoryDirGitignoreEntry(repoPath, memoryDir) {
+  const relative = path.relative(repoPath, memoryDir).split(path.sep).join("/");
+  if (!relative || relative.startsWith("..")) {
+    return { path: null, removed: false };
+  }
+  const entry = `${relative.replace(/\/+$/, "")}/`;
+  const gitignorePath = path.join(repoPath, ".gitignore");
+  if (!fs.existsSync(gitignorePath)) {
+    return { path: gitignorePath, removed: false };
+  }
+  const original = fs.readFileSync(gitignorePath, "utf8");
+  const filtered = original
+    .split(/\r?\n/)
+    .filter((line) => line.trim() !== entry)
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/\s+$/u, "");
+  if (filtered === original.replace(/\s+$/u, "")) {
+    return { path: gitignorePath, removed: false };
+  }
+  if (filtered) {
+    fs.writeFileSync(gitignorePath, `${filtered}\n`, "utf8");
+  } else {
+    fs.rmSync(gitignorePath, { force: true });
+  }
+  return { path: gitignorePath, removed: true };
 }
 
 function renderAgentsBlock(repoState) {
@@ -216,7 +277,10 @@ module.exports = {
   loadRepoState,
   loadSyncState,
   materializedRootPaths,
+  removeAgentsBlock,
+  removeMemoryDirGitignoreEntry,
   registerRepoMapping,
+  unregisterRepoMapping,
   saveRepoState,
   repoStatePath,
   saveSyncState,

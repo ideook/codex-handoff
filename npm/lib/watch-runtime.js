@@ -3,7 +3,7 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 
 const { readJsonFile, watchServiceStatePath } = require("../service/common");
-const { isProcessRunning, terminateProcess } = require("./process-utils");
+const { findScriptProcessPids, forceTerminateProcess, isProcessRunning, terminateProcess, waitForProcessesExit } = require("./process-utils");
 
 function watchServiceState(configDir) {
   return readJsonFile(watchServiceStatePath(configDir), null);
@@ -31,17 +31,42 @@ function startWatchService({ configDir, codexHome, cwd = process.cwd() }) {
   return { command, args, pid: child.pid };
 }
 
-function stopWatchService(configDir) {
+async function stopWatchService(configDir, { timeoutMs = 5000 } = {}) {
   const state = watchServiceState(configDir);
-  if (!state?.pid) return { stopped: false, running: false };
-  terminateProcess(state.pid);
+  const pids = new Set();
+  if (state?.pid) {
+    pids.add(state.pid);
+  }
+  for (const pid of findScriptProcessPids("watch_service.js", { configDir })) {
+    pids.add(pid);
+  }
+  if (!pids.size) return { stopped: false, running: false };
+  for (const pid of pids) {
+    terminateProcess(pid);
+  }
+  let waitResult = await waitForProcessesExit([...pids], { timeoutMs });
+  if (!waitResult.exited && waitResult.remaining.length) {
+    for (const pid of waitResult.remaining) {
+      forceTerminateProcess(pid);
+    }
+    waitResult = await waitForProcessesExit(waitResult.remaining, { timeoutMs: Math.min(timeoutMs, 2000) });
+  }
   clearWatchServiceState(configDir);
-  return { stopped: true, running: false, pid: state.pid };
+  return {
+    stopped: waitResult.exited,
+    running: !waitResult.exited,
+    pid: state?.pid || null,
+    stopped_pids: [...pids].sort((a, b) => a - b),
+    remaining_pids: waitResult.remaining,
+  };
 }
 
 function isWatchServiceRunning(configDir) {
   const state = watchServiceState(configDir);
-  return Boolean(state?.pid && isProcessRunning(state.pid));
+  if (state?.pid && isProcessRunning(state.pid)) {
+    return true;
+  }
+  return findScriptProcessPids("watch_service.js", { configDir }).length > 0;
 }
 
 module.exports = {

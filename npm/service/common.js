@@ -28,6 +28,14 @@ function agentServiceStatePath(configDir = resolveConfigDir()) {
   return path.join(runtimeDir(configDir), "agent-service.json");
 }
 
+function lifecycleLockPath(configDir = resolveConfigDir()) {
+  return path.join(runtimeDir(configDir), "lifecycle.lock");
+}
+
+function installRestartStatePath(configDir = resolveConfigDir()) {
+  return path.join(runtimeDir(configDir), "install-restart.json");
+}
+
 function watchServiceStatePath(configDir = resolveConfigDir()) {
   return path.join(runtimeDir(configDir), "watch-service.json");
 }
@@ -37,7 +45,22 @@ function watchCursorStatePath(configDir = resolveConfigDir()) {
 }
 
 function packageRootFromHere(filename) {
-  return path.resolve(path.dirname(filename), "..", "..");
+  let current = path.resolve(path.dirname(filename));
+  while (true) {
+    if (fs.existsSync(path.join(current, "package.json"))) {
+      return current;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return path.resolve(path.dirname(filename), "..", "..");
+    }
+    current = parent;
+  }
+}
+
+function packageVersionFromHere(filename) {
+  const packageRoot = packageRootFromHere(filename);
+  return readJsonFile(path.join(packageRoot, "package.json"), {}).version || null;
 }
 
 function readJsonFile(filePath, fallback) {
@@ -80,9 +103,12 @@ function isSameOrDescendantPath(candidatePath, parentPath) {
 module.exports = {
   agentServiceStatePath,
   configPath,
+  installRestartStatePath,
   isSameOrDescendantPath,
+  lifecycleLockPath,
   normalizeComparablePath,
   packageRootFromHere,
+  packageVersionFromHere,
   readJsonFile,
   resolveCodexHome,
   resolveConfigDir,

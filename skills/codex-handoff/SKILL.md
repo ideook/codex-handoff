@@ -11,12 +11,53 @@ Use this skill when the user wants to move Codex work between machines through t
 
 Do not improvise the workflow by searching for files manually unless the CLI reports a concrete problem.
 
+Package install alone is never a complete `codex-handoff` setup. If Codex installs or upgrades the npm package as part of the user's request, it must continue by running `codex-handoff setup` or `codex-handoff receive` for the target repo in the same flow.
+
 Prefer these commands in order:
 
 1. `codex-handoff --repo . doctor`
-2. `codex-handoff --repo . install`
+2. `codex-handoff --repo . setup`
 3. `codex-handoff --repo . receive`
 4. `codex-handoff --repo . agent start`
+
+## Package-first bootstrap rule
+
+When the user starts from "nothing installed yet" and asks Codex to set up sync:
+
+1. Install the npm package first.
+2. Let npm `postinstall` install the bundled `codex-handoff` skill.
+3. Immediately continue by using this skill and running `codex-handoff --repo <target-repo> setup` or `codex-handoff --repo <target-repo> receive`.
+
+Do not stop after npm package installation.
+
+If the target repo is not the current working directory, find the target repo path first and use `--repo <path>` explicitly.
+
+During development before npm publish, use the packed tarball path instead of the registry package name:
+
+- `npm pack`
+- `npm install -g ./brdg-codex-handoff-<version>.tgz`
+- `codex-handoff --repo <target-repo> setup`
+
+## Prompt mapping
+
+Interpret short user prompts like this:
+
+- "Install `@brdg/codex-handoff` and start sync for this repository."
+  Install the npm package, then continue immediately into `setup` for the target repo.
+- "Set up codex-handoff sync for this repository."
+  Run `setup`.
+- "Sync this repository with codex-handoff."
+  If unattached, run `setup --skip-agent-start --skip-autostart`; if already attached, run `sync now`; if the user clearly means another machine, use `receive`.
+- "Receive this repository with codex-handoff on another machine."
+  Run `receive`.
+- "I updated codex-handoff. Reconcile this repository so it works again."
+  Assume npm package upgrade already happened or should happen first, then run `setup` so repo state is reconciled on the new version.
+- "Enable codex-handoff push automation for this repository."
+  Run `agent enable` and `agent start`.
+- "Disable codex-handoff push automation for this repository."
+  Run `agent stop`, then `agent disable` if the user wants auto-start disabled too.
+- "Remove codex-handoff from this repository."
+  Run `uninstall`.
 
 ## Interpreting "sync"
 
@@ -25,7 +66,7 @@ When the user says "sync this repo", do not jump straight to watcher mode.
 First align the repo state:
 
 - if the repo is not enabled yet, run:
-  `codex-handoff --repo . install --skip-agent-start --skip-autostart`
+  `codex-handoff --repo . setup --skip-agent-start --skip-autostart`
 - if the repo is already enabled and the user is pushing current local work, run:
   `codex-handoff --repo . sync now`
 - if the user is clearly resuming on another machine or asking to pull remote state first, run:
@@ -33,7 +74,7 @@ First align the repo state:
 
 After that, ask a short follow-up:
 
-- `Push 자동화를 켤까요?`
+- `Do you want to enable automatic push sync?`
 
 Only if the user says yes should you enable the watcher:
 
@@ -54,7 +95,7 @@ If a different file is needed, pass `--dotenv <path>` explicitly.
 
 When the user wants to turn sync on in the current project, run:
 
-`codex-handoff --repo . install`
+`codex-handoff --repo . setup`
 
 That command is the preferred bootstrap entry point. It is expected to:
 
@@ -64,6 +105,8 @@ That command is the preferred bootstrap entry point. It is expected to:
 - choose pull or push automatically
 - register auto-start when possible
 - optionally start the detached watcher
+
+If the user just installed or upgraded the npm package, npm install should stop and restart any running background agent automatically. `codex-handoff setup` is still required afterward to reconcile repo state on the new package version.
 
 ## B PC receive
 
@@ -118,7 +161,7 @@ When the user asks to continue previous work in a synced repo:
 ## Safety rules
 
 - Do not paste R2 secrets into the Codex chat when `~/.codex-handoff/.env.local`, clipboard, or env sources are available.
-- Prefer `doctor`, `install`, and `receive` over ad hoc filesystem searches.
+- Prefer `doctor`, `setup`, and `receive` over ad hoc filesystem searches.
 - Pull before the first push on a new machine.
 - Treat `.codex-handoff` as derived handoff state, not the original Codex source of truth.
 - When the user only wants to continue from synced summaries, prefer `.codex-handoff/latest.md` and `.codex-handoff/handoff.json` over full raw thread restoration.

@@ -5,12 +5,17 @@ const path = require("node:path");
 const process = require("node:process");
 
 const { serviceState, clearServiceState } = require("../lib/agent-runtime");
-const { detectCodexProcesses } = require("../lib/process-utils");
+const { detectCodexProcesses, findScriptProcessPids } = require("../lib/process-utils");
+const { loadDefaultR2Profile } = require("../lib/runtime-config");
+const { pullRepoMemorySnapshot } = require("../lib/sync");
+const { watchServiceState, isWatchServiceRunning, startWatchService, stopWatchService } = require("../lib/watch-runtime");
+const { loadRepoState } = require("../lib/workspace");
 const { AgentController } = require("./agent_controller");
-const { agentServiceStatePath, resolveCodexHome, resolveConfigDir, watchServiceStatePath } = require("./common");
+const { agentServiceStatePath, packageVersionFromHere, resolveCodexHome, resolveConfigDir, watchServiceStatePath } = require("./common");
 const { loadManagedRepos } = require("./repo_registry");
 
 const DEFAULT_POLL_INTERVAL_MS = 2000;
+const PACKAGE_VERSION = packageVersionFromHere(__filename);
 
 function parseArgs(argv) {
   const result = {
@@ -69,7 +74,7 @@ function clearWatchState(configDir) {
 function ensureSingleton(configDir) {
   const existing = serviceState(configDir);
   if (!existing?.pid) {
-    return false;
+    return findScriptProcessPids("agent_service.js", { configDir }).some((pid) => pid !== process.pid);
   }
   if (existing.pid === process.pid) {
     return false;
@@ -104,9 +109,10 @@ async function main() {
     config_dir: options.configDir,
     codex_home: options.codexHome,
     poll_interval_ms: options.pollIntervalMs,
+    package_version: PACKAGE_VERSION,
     phase: "idle",
     watcher: null,
-    implementation_mode: "stub",
+    implementation_mode: "live",
   });
 
   const controller = new AgentController({
@@ -116,30 +122,41 @@ async function main() {
       recordManagedRepoEvent(options.configDir, eventName, details);
     },
     activateWatcher: async () => {
-      const watcher = {
-        placeholder: true,
-        started_at: new Date().toISOString(),
-      };
-      logger.write("watcher placeholder started");
-      recordManagedRepoEvent(options.configDir, "watch_started", watcher);
-      writeWatchState(options.configDir, {
-        pid: process.pid,
-        placeholder: true,
-        started_at: watcher.started_at,
-        config_dir: options.configDir,
-        codex_home: options.codexHome,
+      if (isWatchServiceRunning(options.configDir)) {
+        const existing = watchServiceState(options.configDir) || {};
+        logger.write(`watch service already running pid=${existing.pid || ""}`);
+        recordManagedRepoEvent(options.configDir, "watch_started", {
+          pid: existing.pid || null,
+          reused: true,
+        });
+        return {
+          ...existing,
+          reused: true,
+        };
+      }
+      const watcher = startWatchService({
+        configDir: options.configDir,
+        codexHome: options.codexHome,
       });
+      logger.write(`watch service started pid=${watcher.pid}`);
+      recordManagedRepoEvent(options.configDir, "watch_started", watcher);
       return watcher;
     },
     deactivateWatcher: async () => {
-      logger.write("watcher placeholder stopped");
+      const existing = watchServiceState(options.configDir) || null;
+      const stopped = await stopWatchService(options.configDir);
+      logger.write(`watch service stopped pid=${existing?.pid || ""}`);
       recordManagedRepoEvent(options.configDir, "watch_stopped", {
+        pid: existing?.pid || null,
         stopped_at: new Date().toISOString(),
       });
       clearWatchState(options.configDir);
-      return { stopped: true, placeholder: true };
+      return {
+        ...stopped,
+        previous_pid: existing?.pid || null,
+      };
     },
-    performStartupSync: async () => runStartupSyncStub(options.configDir, options.codexHome, logger),
+    performStartupSync: async () => runStartupSync(options.configDir, options.codexHome, logger),
     writeState: async (payload) => {
       writeState(options.configDir, payload);
     },
@@ -147,6 +164,15 @@ async function main() {
 
   const shutdown = async () => {
     logger.write("shutting down helper");
+    const existingWatcher = watchServiceState(options.configDir) || null;
+    if (existingWatcher?.pid) {
+      await stopWatchService(options.configDir);
+      recordManagedRepoEvent(options.configDir, "watch_stopped", {
+        pid: existingWatcher.pid,
+        stopped_at: new Date().toISOString(),
+        reason: "helper_shutdown",
+      });
+    }
     recordManagedRepoEvent(options.configDir, "helper_stopped", {
       stopped_at: new Date().toISOString(),
     });
@@ -182,34 +208,85 @@ async function main() {
   await new Promise(() => {});
 }
 
-async function runStartupSyncStub(configDir, codexHome, logger) {
+async function runStartupSync(configDir, codexHome, logger) {
   const managedRepos = loadManagedRepos(configDir).filter((repo) => fs.existsSync(repo.repoPath));
   const startedAt = new Date().toISOString();
-  logger.write(`sync placeholder invoked for codex_home=${codexHome}`);
+  logger.write(`startup sync invoked for codex_home=${codexHome}`);
   recordManagedRepoEvent(configDir, "startup_sync_started", {
     started_at: startedAt,
     codex_home: codexHome,
     managed_repo_count: managedRepos.length,
   });
-  const repos = managedRepos.map((repo) => ({
-    repo: repo.repoPath,
-    repo_slug: repo.repoSlug,
-    status: "placeholder",
-  }));
-  for (const repo of repos) {
-    recordManagedRepoEvent(configDir, "startup_sync_repo", repo, [repo.repo]);
+  if (managedRepos.length === 0) {
+    const completedAt = new Date().toISOString();
+    recordManagedRepoEvent(configDir, "startup_sync_completed", {
+      completed_at: completedAt,
+      managed_repo_count: 0,
+    });
+    return {
+      synced_repo_count: 0,
+      skipped_repo_count: 0,
+      synced_repos: [],
+      errors: [],
+      completed_at: completedAt,
+    };
   }
+
+  const profile = loadDefaultR2Profile(configDir);
+  const syncedRepos = [];
+  const errors = [];
+  let skippedRepoCount = 0;
+
+  for (const repo of managedRepos) {
+    const memoryDir = path.join(repo.repoPath, ".codex-handoff");
+    const repoState = loadRepoState(memoryDir);
+    if (!repoState?.repo_slug || !repoState?.remote_prefix) {
+      skippedRepoCount += 1;
+      recordManagedRepoEvent(configDir, "startup_sync_repo", {
+        repo: repo.repoPath,
+        repo_slug: repo.repoSlug,
+        status: "skipped",
+        reason: "missing_repo_state",
+      }, [repo.repoPath]);
+      continue;
+    }
+    try {
+      const result = await pullRepoMemorySnapshot(repo.repoPath, memoryDir, profile, repoState, { codexHome });
+      const entry = {
+        repo: repo.repoPath,
+        repo_slug: repo.repoSlug,
+        status: "pulled",
+        downloaded_objects: result.downloaded_objects || 0,
+        current_thread: result.current_thread || null,
+        imported_thread: result.imported_thread?.thread_id || null,
+      };
+      syncedRepos.push(entry);
+      recordManagedRepoEvent(configDir, "startup_sync_repo", entry, [repo.repoPath]);
+    } catch (error) {
+      const entry = {
+        repo: repo.repoPath,
+        repo_slug: repo.repoSlug,
+        status: "error",
+        error: error.message,
+      };
+      errors.push(entry);
+      recordManagedRepoEvent(configDir, "startup_sync_repo", entry, [repo.repoPath]);
+    }
+  }
+
   const completedAt = new Date().toISOString();
   recordManagedRepoEvent(configDir, "startup_sync_completed", {
     completed_at: completedAt,
     managed_repo_count: managedRepos.length,
+    synced_repo_count: syncedRepos.length,
+    skipped_repo_count: skippedRepoCount,
+    error_count: errors.length,
   });
   return {
-    placeholder: true,
-    synced_repo_count: 0,
-    skipped_repo_count: 0,
-    synced_repos: repos,
-    errors: [],
+    synced_repo_count: syncedRepos.length,
+    skipped_repo_count: skippedRepoCount,
+    synced_repos: syncedRepos,
+    errors,
     completed_at: completedAt,
   };
 }
