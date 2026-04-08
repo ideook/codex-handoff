@@ -15,10 +15,10 @@ function readSecret(secretBackend, secretRef, profileName, configDir) {
     return result.stdout.trim();
   }
   if (secretBackend === "plaintext-file") {
-    return fs.readFileSync(secretRef, "utf8");
+    return fs.readFileSync(secretRef, "utf8").trimEnd();
   }
   if (secretBackend === "windows-dpapi") {
-    throw new Error("windows-dpapi secret reading is not yet implemented in Node runtime.");
+    return windowsUnprotect(secretRef);
   }
   throw new Error(`Unsupported secret backend: ${secretBackend}`);
 }
@@ -37,7 +37,11 @@ function storeSecret(profileName, secret, configDir) {
     return { secret_backend: "macos-keychain", secret_ref: service };
   }
   if (process.platform === "win32") {
-    throw new Error("windows-dpapi secret storage is not yet implemented in Node runtime.");
+    const secretsDir = path.join(configDir, "secrets");
+    fs.mkdirSync(secretsDir, { recursive: true });
+    const secretPath = path.join(secretsDir, `${profileName.replaceAll("/", "_")}.dpapi`);
+    fs.writeFileSync(secretPath, `${windowsProtect(secret)}\n`, "utf8");
+    return { secret_backend: "windows-dpapi", secret_ref: secretPath };
   }
   const secretsDir = path.join(configDir, "secrets");
   fs.mkdirSync(secretsDir, { recursive: true });
@@ -61,3 +65,36 @@ module.exports = {
   readSecret,
   storeSecret,
 };
+
+function windowsProtect(secret) {
+  const encoded = Buffer.from(String(secret || ""), "utf8").toString("base64");
+  const script = [
+    `$plain = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(${powershellString(encoded)}))`,
+    "$secure = ConvertTo-SecureString $plain -AsPlainText -Force",
+    "ConvertFrom-SecureString $secure",
+  ].join("; ");
+  return runPowerShell(script).trim();
+}
+
+function windowsUnprotect(secretRef) {
+  const encoded = fs.readFileSync(secretRef, "utf8").trim();
+  const script = [
+    `$secure = ConvertTo-SecureString ${powershellString(encoded)}`,
+    "$ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)",
+    "try { [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr) } finally { if ($ptr -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) } }",
+  ].join("; ");
+  return runPowerShell(script).trim();
+}
+
+function runPowerShell(script) {
+  const shell = process.platform === "win32" ? "powershell" : "pwsh";
+  const result = spawnSync(shell, ["-NoProfile", "-Command", script], { encoding: "utf8" });
+  if (result.status !== 0) {
+    throw new Error(result.stderr.trim() || result.stdout.trim() || "PowerShell command failed");
+  }
+  return result.stdout;
+}
+
+function powershellString(value) {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}

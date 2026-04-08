@@ -24,6 +24,10 @@ function runtimeDir(configDir = resolveConfigDir()) {
   return path.join(configDir, "runtime");
 }
 
+function agentServiceStatePath(configDir = resolveConfigDir()) {
+  return path.join(runtimeDir(configDir), "agent-service.json");
+}
+
 function watchServiceStatePath(configDir = resolveConfigDir()) {
   return path.join(runtimeDir(configDir), "watch-service.json");
 }
@@ -74,6 +78,7 @@ function isSameOrDescendantPath(candidatePath, parentPath) {
 }
 
 module.exports = {
+  agentServiceStatePath,
   configPath,
   isSameOrDescendantPath,
   normalizeComparablePath,

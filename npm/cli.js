@@ -3,7 +3,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
-const { serviceState, isRunning, startWatchService, stopWatchService } = require("./lib/agent-runtime");
+const { serviceState, isRunning, startAgentService, stopAgentService } = require("./lib/agent-runtime");
 const { autostartStatus, disableAutostart, enableAutostart } = require("./lib/autostart");
 const { describeCurrentProject } = require("./lib/codex-projects");
 const { gitOriginUrlFromRepo } = require("./lib/git-config");
@@ -26,6 +26,7 @@ const {
   describeSyncState,
   exportRepoThreads,
   importThreadBundleToCodex,
+  pullRepoMemorySnapshot,
   pullMemoryTree,
   pushMemoryTree,
   recordSyncEvent,
@@ -446,7 +447,6 @@ async function handleThreads(args, repoPath, memoryDir, codexHome) {
 
 async function handleSync(args, repoPath, memoryDir, configDir, codexHome) {
   const repoState = requireRepoState(memoryDir);
-  const profile = loadDefaultR2Profile(configDir);
   if (args.subcommand === "status") {
     printJson(augmentSyncResult(memoryDir, repoState, {
       repo: repoPath,
@@ -457,6 +457,7 @@ async function handleSync(args, repoPath, memoryDir, configDir, codexHome) {
     }));
     return 0;
   }
+  const profile = loadDefaultR2Profile(configDir);
   if (args.subcommand === "push") {
     const uploaded = await pushMemoryTree(profile, memoryDir, repoState.remote_prefix);
     recordSyncEvent(memoryDir, {
@@ -524,14 +525,14 @@ async function handleAgent(args, repoPath, memoryDir, configDir, codexHome) {
     return { ...statusPayload(repoPath, repoState, state, configDir), autostart: autostartStatus(repoState.repo_slug, configDir) };
   }
   if (args.subcommand === "stop") {
-    stopWatchService(configDir);
+    stopAgentService(configDir);
     return statusPayload(repoPath, repoState, null, configDir);
   }
   if (args.subcommand === "start") {
     if (state?.pid && isRunning(state.pid)) {
       return { already_running: true, ...statusPayload(repoPath, repoState, state, configDir) };
     }
-    const started = startWatchService({ repoPath, configDir, codexHome });
+    const started = startAgentService({ cwd: repoPath, configDir, codexHome });
     return {
       already_running: false,
       mode: "global",
@@ -542,11 +543,12 @@ async function handleAgent(args, repoPath, memoryDir, configDir, codexHome) {
       profile: repoState.remote_profile,
       repo: repoPath,
       interval_seconds: 15,
-      summary_mode: "heuristic",
+      summary_mode: "none",
       include_raw_threads: repoIncludesRawThreads(repoState),
       codex_home: codexHome,
-      initial_sync: false,
-      log_path: path.join(configDir, "logs", "watch-service.log"),
+      initial_sync: true,
+      phase: "idle",
+      log_path: path.join(configDir, "logs", "agent-service.log"),
       event_log_path: path.join(configDir, "logs", "watch-events.log"),
       raw_event_log_path: path.join(configDir, "logs", "watch-raw-events.log"),
       changed_files_log_path: path.join(configDir, "logs", "watch-changed-files.log"),
@@ -555,8 +557,8 @@ async function handleAgent(args, repoPath, memoryDir, configDir, codexHome) {
     };
   }
   if (args.subcommand === "restart") {
-    stopWatchService(configDir);
-    const started = startWatchService({ repoPath, configDir, codexHome });
+    stopAgentService(configDir);
+    const started = startAgentService({ cwd: repoPath, configDir, codexHome });
     return {
       restarted: true,
       mode: "global",
@@ -567,11 +569,12 @@ async function handleAgent(args, repoPath, memoryDir, configDir, codexHome) {
       profile: repoState.remote_profile,
       repo: repoPath,
       interval_seconds: 15,
-      summary_mode: "heuristic",
+      summary_mode: "none",
       include_raw_threads: repoIncludesRawThreads(repoState),
       codex_home: codexHome,
-      initial_sync: false,
-      log_path: path.join(configDir, "logs", "watch-service.log"),
+      initial_sync: true,
+      phase: "idle",
+      log_path: path.join(configDir, "logs", "agent-service.log"),
       event_log_path: path.join(configDir, "logs", "watch-events.log"),
       raw_event_log_path: path.join(configDir, "logs", "watch-raw-events.log"),
       changed_files_log_path: path.join(configDir, "logs", "watch-changed-files.log"),
@@ -634,12 +637,14 @@ function statusPayload(repoPath, repoState, state, configDir) {
     pid: state?.pid || null,
     profile: repoState.remote_profile,
     repo: repoPath,
-    interval_seconds: 15,
-    summary_mode: "heuristic",
+    interval_seconds: state?.poll_interval_ms ? state.poll_interval_ms / 1000 : 2,
+    summary_mode: "none",
     include_raw_threads: repoIncludesRawThreads(repoState),
     codex_home: state?.codex_home || resolveCodexHome(),
-    initial_sync: false,
-    log_path: path.join(configDir, "logs", "watch-service.log"),
+    initial_sync: true,
+    phase: state?.phase || "idle",
+    watcher_running: Boolean(state?.watcher?.pid && running),
+    log_path: path.join(configDir, "logs", "agent-service.log"),
     event_log_path: path.join(configDir, "logs", "watch-events.log"),
     raw_event_log_path: path.join(configDir, "logs", "watch-raw-events.log"),
     changed_files_log_path: path.join(configDir, "logs", "watch-changed-files.log"),
@@ -689,32 +694,8 @@ function augmentSyncResult(memoryDir, repoState, payload) {
 }
 
 async function performSyncPull(repoPath, memoryDir, profile, repoState, { codexHome, thread = null } = {}) {
-  const downloaded = await pullMemoryTree(profile, memoryDir, repoState.remote_prefix);
-  let threadId = thread;
-  if (!threadId && fs.existsSync(currentThreadPath(memoryDir))) {
-    threadId = JSON.parse(fs.readFileSync(currentThreadPath(memoryDir), "utf8")).thread_id || null;
-  }
-  let imported = null;
-  if (threadId) {
-    imported = importThreadBundleToCodex(repoPath, memoryDir, threadId, { codexHome });
-  }
-  recordSyncEvent(memoryDir, {
-    repoPath,
-    prefix: repoState.remote_prefix,
-    direction: "pull",
-    command: "pull",
-    downloadedObjects: downloaded.length,
-    importedThread: imported,
-  });
-  return augmentSyncResult(memoryDir, repoState, {
-    repo: repoPath,
-    repo_slug: repoState.repo_slug,
-    remote_profile: repoState.remote_profile,
-    remote_prefix: repoState.remote_prefix,
-    prefix: repoState.remote_prefix,
-    downloaded_objects: downloaded.length,
-    imported_thread: imported,
-  });
+  const result = await pullRepoMemorySnapshot(repoPath, memoryDir, profile, repoState, { codexHome, thread });
+  return augmentSyncResult(memoryDir, repoState, result);
 }
 
 async function listRemoteRepoSlugs(profile) {

@@ -236,6 +236,39 @@ async function pullMemoryTree(profile, memoryDir, prefix) {
   return downloaded;
 }
 
+async function pullRepoMemorySnapshot(repoPath, memoryDir, profile, repoState, { codexHome, thread = null } = {}) {
+  const downloaded = await pullMemoryTree(profile, memoryDir, repoState.remote_prefix);
+  let threadId = thread;
+  if (!threadId && fs.existsSync(currentThreadPath(memoryDir))) {
+    threadId = JSON.parse(fs.readFileSync(currentThreadPath(memoryDir), "utf8")).thread_id || null;
+  }
+  let imported = null;
+  const bundlePath = threadId ? path.join(memoryDir, "threads", `${threadId}.json`) : null;
+  if (threadId && bundlePath && fs.existsSync(bundlePath)) {
+    imported = importThreadBundleToCodex(repoPath, memoryDir, threadId, { codexHome });
+  }
+  const syncState = recordSyncEvent(memoryDir, {
+    repoPath,
+    prefix: repoState.remote_prefix,
+    direction: "pull",
+    command: "pull",
+    downloadedObjects: downloaded.length,
+    importedThread: imported,
+  });
+  return {
+    repo: repoPath,
+    repo_slug: repoState.repo_slug,
+    remote_profile: repoState.remote_profile,
+    remote_prefix: repoState.remote_prefix,
+    prefix: repoState.remote_prefix,
+    downloaded_objects: downloaded.length,
+    imported_thread: imported,
+    sync_state_path: syncStatePath(memoryDir),
+    sync_state: syncState,
+    sync_health: buildSyncHealth(memoryDir, syncState),
+  };
+}
+
 function pruneRemovedLocalFiles(memoryDir, remotePaths) {
   for (const filePath of listLocalFiles(memoryDir).sort().reverse()) {
     const resolved = path.resolve(filePath);
@@ -618,6 +651,7 @@ module.exports = {
   describeSyncState,
   exportRepoThreads,
   importThreadBundleToCodex,
+  pullRepoMemorySnapshot,
   pullMemoryTree,
   pushMemoryTree,
   recordSyncEvent,

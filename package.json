@@ -8,7 +8,7 @@
   },
   "scripts": {
     "postinstall": "node ./npm/postinstall.js",
-    "test:node": "node --test npm/service/watch_service.test.js npm/lib/reader.test.js npm/lib/summarize.test.js npm/lib/sync.test.js npm/cli.test.js"
+    "test:node": "node --test npm/service/watch_service.test.js npm/service/agent_controller.test.js npm/lib/reader.test.js npm/lib/summarize.test.js npm/lib/sync.test.js npm/cli.test.js"
   },
   "files": [
     "skills/codex-handoff/**",
