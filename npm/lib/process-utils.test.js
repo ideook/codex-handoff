@@ -52,6 +52,41 @@ test("isCodexAppProcess rejects non-app codex binaries such as extension app-ser
   );
 });
 
+test("detectCodexProcesses keeps only visible macOS main app processes when window state is known", () => {
+  const detected = detectCodexProcesses(
+    [
+      {
+        pid: 5,
+        name: "Codex",
+        command: "/Applications/Codex.app/Contents/MacOS/Codex",
+        hasVisibleWindow: true,
+      },
+      {
+        pid: 6,
+        name: "Codex",
+        command: "/Applications/Codex.app/Contents/MacOS/Codex",
+        hasVisibleWindow: false,
+      },
+      {
+        pid: 7,
+        name: "Codex Helper",
+        command: "/Applications/Codex.app/Contents/Frameworks/Codex Helper.app/Contents/MacOS/Codex Helper --type=renderer",
+        hasVisibleWindow: true,
+      },
+    ],
+    { platform: "darwin" },
+  );
+
+  assert.deepEqual(detected, [
+    {
+      pid: 5,
+      name: "Codex",
+      command: "/Applications/Codex.app/Contents/MacOS/Codex",
+      hasVisibleWindow: true,
+    },
+  ]);
+});
+
 test("isCodexAppProcess keeps only the Windows Store main Codex window process", () => {
   assert.equal(
     isCodexAppProcess({

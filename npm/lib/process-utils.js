@@ -123,7 +123,7 @@ function listProcessDetails() {
   if (result.status !== 0) {
     return [];
   }
-  return result.stdout
+  const processDetails = result.stdout
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
@@ -137,6 +137,17 @@ function listProcessDetails() {
       };
     })
     .filter((item) => item && Number.isInteger(item.pid) && item.pid > 0);
+  if (process.platform !== "darwin") {
+    return processDetails;
+  }
+  const visibleWindowPids = macosVisibleWindowPids();
+  if (!visibleWindowPids) {
+    return processDetails;
+  }
+  return processDetails.map((item) => ({
+    ...item,
+    hasVisibleWindow: visibleWindowPids.has(item.pid),
+  }));
 }
 
 function findScriptProcessPids(scriptName, { configDir = null } = {}) {
@@ -153,7 +164,8 @@ function findScriptProcessPids(scriptName, { configDir = null } = {}) {
 function detectCodexProcesses(processes = null, options = {}) {
   const candidates = Array.isArray(processes) ? processes : listProcessDetails();
   const matches = candidates.filter((item) => isCodexAppProcess(item));
-  const shouldRequireVisibleWindow = process.platform === "win32" || options.platform === "win32";
+  const platform = options.platform || process.platform;
+  const shouldRequireVisibleWindow = platform === "win32" || platform === "darwin";
   if (!shouldRequireVisibleWindow) {
     return matches;
   }
@@ -162,6 +174,45 @@ function detectCodexProcesses(processes = null, options = {}) {
     return matches;
   }
   return matchesWithWindowState.filter((item) => item.hasVisibleWindow);
+}
+
+function macosVisibleWindowPids() {
+  const result = spawnSync(
+    "osascript",
+    [
+      "-e",
+      "tell application \"System Events\"\n" +
+        "  set visiblePids to {}\n" +
+        "  repeat with proc in (application processes whose name is \"Codex\")\n" +
+        "    set visibleWindowCount to 0\n" +
+        "    try\n" +
+        "      if visible of proc is true then\n" +
+        "        repeat with candidateWindow in windows of proc\n" +
+        "          set isMinimized to false\n" +
+        "          try\n" +
+        "            set isMinimized to value of attribute \"AXMinimized\" of candidateWindow\n" +
+        "          end try\n" +
+        "          if isMinimized is false then set visibleWindowCount to visibleWindowCount + 1\n" +
+        "        end repeat\n" +
+        "      end if\n" +
+        "    end try\n" +
+        "    if visibleWindowCount > 0 then set end of visiblePids to (unix id of proc as text)\n" +
+        "  end repeat\n" +
+        "  set AppleScript's text item delimiters to linefeed\n" +
+        "  return visiblePids as text\n" +
+        "end tell",
+    ],
+    { encoding: "utf8" },
+  );
+  if (result.status !== 0) {
+    return null;
+  }
+  return new Set(
+    String(result.stdout || "")
+      .split(/\r?\n/)
+      .map((line) => Number(line.trim()))
+      .filter((pid) => Number.isInteger(pid) && pid > 0),
+  );
 }
 
 function isCodexProcessName(name) {
