@@ -62,8 +62,6 @@ function makeFixtureMemory() {
     ].join("\n"),
     "utf8",
   );
-  fs.mkdirSync(memoryDir, { recursive: true });
-  fs.writeFileSync(path.join(memoryDir, "repo.json"), JSON.stringify({ workspace_root: repoDir }, null, 2) + "\n", "utf8");
   return { repoDir, memoryDir };
 }
 

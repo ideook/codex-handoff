@@ -82,10 +82,14 @@ test("AgentController stops watcher when Codex disappears", async () => {
 
 test("AgentController keeps watcher active when Codex stays running in background", async () => {
   let stopCalls = 0;
+  let backgroundRefreshCalls = 0;
 
   const controller = new AgentController({
     detectCodexProcesses: async () => [{ pid: 101, name: "codex.exe", hasVisibleWindow: false }],
     performStartupSync: async () => ({ synced_repo_count: 0 }),
+    performBackgroundRefresh: async () => {
+      backgroundRefreshCalls += 1;
+    },
     performShutdownSync: async () => ({ synced_repo_count: 0 }),
     activateWatcher: async () => ({ pid: 999 }),
     deactivateWatcher: async () => {
@@ -102,6 +106,7 @@ test("AgentController keeps watcher active when Codex stays running in backgroun
   await controller.tick();
 
   assert.equal(stopCalls, 0);
+  assert.equal(backgroundRefreshCalls, 1);
   assert.equal(controller.codexRunning, true);
   assert.deepEqual(controller.watcher, { pid: 999 });
 });

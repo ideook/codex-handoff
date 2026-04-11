@@ -2,7 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { summarizeTranscriptBundle } = require("./summarize");
 const { listThreadBundleFiles, readTranscriptFile, resolveThreadBundlePath } = require("./thread-bundles");
-const { syncedThreadsDir, repoStatePath } = require("./workspace");
+const { syncedThreadsDir } = require("./workspace");
 
 const DEFAULT_MEMORY_DIRNAME = ".codex-handoff";
 
@@ -123,12 +123,7 @@ function readCurrentThreadBundle(memoryDir) {
 }
 
 function resolveRepoFromMemory(memoryDir) {
-  try {
-    const repoPath = JSON.parse(fs.readFileSync(repoStatePath(memoryDir), "utf8")).workspace_root;
-    return repoPath || memoryDir;
-  } catch {
-    return memoryDir;
-  }
+  return path.dirname(path.resolve(memoryDir));
 }
 
 function collectText(value) {

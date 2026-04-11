@@ -1,10 +1,11 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
-const { canonicalizeRepoPath } = require("../service/common");
+const { canonicalizeRepoPath, normalizeComparablePath, resolveConfigDir } = require("../service/common");
 const { writeJsonFileIfChanged } = require("./file-ops");
 const { gitOriginUrlFromRepo } = require("./git-config");
 const { mergeGitOriginState, normalizeCwd } = require("./local-codex");
+const { loadConfig, saveConfig } = require("./runtime-config");
 const { DEFAULT_REMOTE_AUTH_PATH, DEFAULT_REMOTE_AUTH_TYPE } = require("./repo-auth");
 
 const MANAGED_BLOCK_START = "<!-- codex-handoff:start -->";
@@ -12,7 +13,7 @@ const MANAGED_BLOCK_END = "<!-- codex-handoff:end -->";
 const SYNCED_THREADS_DIRNAME = "synced-threads";
 const LOCAL_THREADS_DIRNAME = "local-threads";
 
-function repoStatePath(memoryDir) {
+function legacyRepoStatePath(memoryDir) {
   return path.join(memoryDir, "repo.json");
 }
 
@@ -28,14 +29,59 @@ function syncStatePath(memoryDir) {
   return path.join(memoryDir, "sync-state.json");
 }
 
-function loadRepoState(memoryDir) {
-  return normalizeRepoState(readJson(repoStatePath(memoryDir), {}));
+function repoRootFromMemoryDir(memoryDir) {
+  let current = path.resolve(memoryDir || "");
+  while (current && current !== path.dirname(current)) {
+    if (path.basename(current) === ".codex-handoff") {
+      return path.dirname(current);
+    }
+    current = path.dirname(current);
+  }
+  return path.dirname(path.resolve(memoryDir || "."));
 }
 
-function saveRepoState(memoryDir, payload) {
-  ensureMemoryLayout(memoryDir);
-  const filePath = repoStatePath(memoryDir);
-  writeJsonFileIfChanged(filePath, normalizeRepoState(payload));
+function configRepoState(repoPath, configDir = resolveConfigDir()) {
+  const config = loadConfig(configDir);
+  const canonicalRepoPath = canonicalizeRepoPath(repoPath);
+  const repos = config.repos || {};
+  for (const [candidatePath, repoState] of Object.entries(repos)) {
+    if (normalizeComparablePath(candidatePath) === normalizeComparablePath(canonicalRepoPath)) {
+      return normalizeRepoState({
+        ...repoState,
+        machine_id: config.machine_id || null,
+        workspace_root: canonicalRepoPath,
+        repo_path: normalizeCwd(canonicalRepoPath),
+        remote_auth_type: DEFAULT_REMOTE_AUTH_TYPE,
+        remote_auth_path: DEFAULT_REMOTE_AUTH_PATH,
+      });
+    }
+  }
+  return {};
+}
+
+function loadRepoState(memoryDir, { repoPath = null, configDir = resolveConfigDir() } = {}) {
+  const resolvedRepoPath = repoPath ? path.resolve(repoPath) : repoRootFromMemoryDir(memoryDir);
+  return configRepoState(resolvedRepoPath, configDir);
+}
+
+function saveRepoState(memoryDir, payload, { repoPath = null, configDir = resolveConfigDir() } = {}) {
+  const resolvedRepoPath = repoPath ? path.resolve(repoPath) : repoRootFromMemoryDir(memoryDir);
+  const normalized = normalizeRepoState({
+    ...payload,
+    workspace_root: resolvedRepoPath,
+    repo_path: normalizeCwd(resolvedRepoPath),
+  });
+  const config = loadConfig(configDir);
+  if (!config.machine_id && normalized.machine_id) {
+    config.machine_id = normalized.machine_id;
+  }
+  registerRepoMapping(config, resolvedRepoPath, normalized);
+  const filePath = saveConfig(configDir, config);
+  try {
+    fs.rmSync(legacyRepoStatePath(memoryDir), { force: true });
+  } catch {
+    // Ignore legacy local repo-state cleanup failures.
+  }
   return filePath;
 }
 
@@ -204,11 +250,20 @@ function refreshRepoStateForCurrentRepo(repoPath, repoState = {}) {
   if (!existing.repo_slug) {
     return existing;
   }
+  const currentOrigin = gitOriginUrl(repoPath);
+  const inferredSlug = currentOrigin ? slugFromOrigin(currentOrigin) : null;
   const gitOrigins = mergeGitOriginState(
-    gitOriginUrl(repoPath),
+    currentOrigin,
     existing.git_origin_url || null,
     existing.git_origin_urls || [],
   );
+  const nextRepoSlug = String(existing.match_status || "") === "explicit"
+    ? existing.repo_slug
+    : (inferredSlug || existing.repo_slug);
+  const nextRepoSlugAliases = normalizeRepoSlugAliases(nextRepoSlug, [
+    existing.repo_slug,
+    ...(Array.isArray(existing.repo_slug_aliases) ? existing.repo_slug_aliases : []),
+  ]);
   return normalizeRepoState({
     ...existing,
     project_name: existing.project_name || path.basename(repoPath),
@@ -222,7 +277,9 @@ function refreshRepoStateForCurrentRepo(repoPath, repoState = {}) {
       is_in_sidebar_groups: Boolean(existing.codex_project?.is_in_sidebar_groups),
     },
     repo_path: normalizeCwd(repoPath),
-    remote_prefix: existing.remote_prefix || repoPrefixForSlug(existing.repo_slug),
+    repo_slug: nextRepoSlug,
+    repo_slug_aliases: nextRepoSlugAliases,
+    remote_prefix: repoPrefixForSlug(nextRepoSlug),
     git_origin_url: gitOrigins.git_origin_url,
     git_origin_urls: gitOrigins.git_origin_urls,
     updated_at: new Date().toISOString(),
@@ -238,20 +295,11 @@ function registerRepoMapping(configPayload, repoPath, repoState) {
     }
   }
   repos[canonicalRepoPath] = {
-    machine_id: repoState.machine_id,
-    project_name: repoState.project_name || "",
-    workspace_root: repoState.workspace_root || canonicalRepoPath,
     repo_slug: repoState.repo_slug,
-    repo_slug_aliases: normalizeRepoSlugAliases(repoState.repo_slug, repoState.repo_slug_aliases),
-    remote_auth_type: repoState.remote_auth_type || DEFAULT_REMOTE_AUTH_TYPE,
-    remote_auth_path: repoState.remote_auth_path || DEFAULT_REMOTE_AUTH_PATH,
-    remote_prefix: repoState.remote_prefix,
-    summary_mode: repoState.summary_mode,
-    include_raw_threads: repoState.include_raw_threads,
-    match_mode: repoState.match_mode,
-    match_status: repoState.match_status,
     git_origin_url: repoState.git_origin_url || null,
     git_origin_urls: Array.isArray(repoState.git_origin_urls) ? repoState.git_origin_urls : [],
+    summary_mode: repoState.summary_mode || "auto",
+    include_raw_threads: repoState.include_raw_threads === true,
     updated_at: new Date().toISOString(),
   };
   return configPayload;
@@ -527,7 +575,6 @@ module.exports = {
   normalizeRepoSlugAliases,
   unregisterRepoMapping,
   saveRepoState,
-  repoStatePath,
   saveSyncState,
   syncStatePath,
   threadIndexPath,

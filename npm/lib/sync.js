@@ -407,13 +407,9 @@ async function readRemotePrefixState(profile, prefix) {
     // Ignore missing sync-state metadata.
   }
   try {
-    repoState = JSON.parse((await getR2Object(profile, `${baseKey}/repo.json`)).toString("utf8"));
+    repoState = JSON.parse((await getR2Object(profile, `${baseKey}/manifest.json`)).toString("utf8"));
   } catch {
-    try {
-      repoState = JSON.parse((await getR2Object(profile, `${baseKey}/manifest.json`)).toString("utf8"));
-    } catch {
-      // Ignore missing repo metadata.
-    }
+    // Ignore missing repo metadata.
   }
   let objectCount = 0;
   if (!syncState && !repoState) {
@@ -464,16 +460,25 @@ async function selectPullPrefix(profile, prefixes) {
   };
 }
 
-async function pushRepoControlFiles(profile, memoryDir, prefixes, relPaths = ["repo.json", "sync-state.json"]) {
+async function pushRepoControlFiles(profile, memoryDir, prefixes, relPaths = ["manifest.json", "sync-state.json"]) {
   const targetPrefixes = [...new Set((prefixes || []).filter(Boolean))];
   let uploaded = [];
+  const repoState = loadRepoState(memoryDir);
   for (const targetPrefix of targetPrefixes) {
-    const result = await pushMemoryTree(profile, memoryDir, targetPrefix, {
-      relPaths,
-      prune: false,
-      sourceDir: memoryDir,
-    });
-    uploaded = uploaded.concat(result);
+    const normalizedPrefix = String(targetPrefix || "").replace(/\/+$/, "");
+    if (relPaths.includes("manifest.json")) {
+      const key = `${normalizedPrefix}/manifest.json`;
+      await putR2Object(profile, key, Buffer.from(`${JSON.stringify(repoState, null, 2)}\n`, "utf8"));
+      uploaded.push(key);
+    }
+    if (relPaths.includes("sync-state.json")) {
+      const result = await pushMemoryTree(profile, memoryDir, targetPrefix, {
+        relPaths: ["sync-state.json"],
+        prune: false,
+        sourceDir: memoryDir,
+      });
+      uploaded = uploaded.concat(result);
+    }
   }
   return uploaded;
 }
@@ -584,9 +589,9 @@ async function pullRepoMemorySnapshot(repoPath, memoryDir, profile, repoState, {
   const pullTarget = await selectPullPrefix(profile, targetPrefixes);
   const selectedPrefix = pullTarget.selected_prefix || repoState.remote_prefix;
   const downloaded = await pullMemoryTree(profile, targetDir, selectedPrefix);
-  const pulledRepoState = pullTarget.selected_candidate?.repo_state || loadRepoState(targetDir);
-  const localizedRepoState = relocalizeRepoState(repoPath, pulledRepoState, repoState);
-  saveRepoState(memoryDir, localizedRepoState);
+    const pulledRepoState = pullTarget.selected_candidate?.repo_state || loadRepoState(memoryDir, { repoPath });
+    const localizedRepoState = relocalizeRepoState(repoPath, pulledRepoState, repoState);
+    saveRepoState(memoryDir, localizedRepoState, { repoPath });
   rebuildReadContextMetadata(targetDir);
   let threadId = thread;
   if (!threadId && fs.existsSync(currentThreadPath(targetDir))) {
@@ -1166,7 +1171,6 @@ function recordSyncEvent(memoryDir, { repoPath, prefix, direction, command, thre
 }
 
 function shouldSyncRelpath(relPath, threadIds, currentThreadIdValue) {
-  if (relPath === "repo.json") return true;
   if (relPath === "thread-index.json") return true;
   if (relPath === "sync-state.json") return true;
   if (relPath === "current-thread.json") return currentThreadIdValue && threadIds.includes(currentThreadIdValue);

@@ -3,7 +3,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { loadThreadTranscript, resolveThreadBundlePath, resolveThreadBundleRelPath } = require("./thread-bundles");
-const { syncedThreadsDir, repoStatePath } = require("./workspace");
+const { syncedThreadsDir, loadRepoState } = require("./workspace");
 
 const DEFAULT_MAX_THREAD_BYTES = 32768;
 const DEFAULT_MAX_DIGEST_THREADS = 100;
@@ -135,7 +135,10 @@ function normalizeOptions(options) {
 function prepareMemoryInputs(repoPath, memoryDir, inputMemoryDir, inputDir, options) {
   const copied = [];
   const skipped = [];
-  copyFileByPath(repoStatePath(memoryDir), "repo.json", path.join(inputDir, "repo.json"), copied, skipped, { inputDir });
+  const repoState = loadRepoState(memoryDir, { repoPath });
+  const repoConfigPath = path.join(inputDir, "repo-config.json");
+  fs.writeFileSync(repoConfigPath, JSON.stringify(repoState, null, 2) + "\n", "utf8");
+  copied.push({ path: "repo-config", input_path: "repo-config.json", bytes: fs.statSync(repoConfigPath).size });
   copyMemoryFile(memoryDir, "memory.md", path.join(inputDir, "previous-memory.md"), copied, skipped, { inputDir });
   for (const name of ["latest.md", "handoff.json", "thread-index.json", "current-thread.json"]) {
     copyMemoryFile(inputMemoryDir, name, path.join(inputDir, name), copied, skipped, { inputDir });

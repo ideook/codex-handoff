@@ -13,7 +13,6 @@ function makeRepo() {
   fs.mkdirSync(path.join(syncedThreadsDir, "threads"), { recursive: true });
   fs.writeFileSync(path.join(syncedThreadsDir, "latest.md"), "# Latest\n\nCurrent work.\n", "utf8");
   fs.writeFileSync(path.join(syncedThreadsDir, "handoff.json"), JSON.stringify({ current_goal: "memory tests" }, null, 2) + "\n", "utf8");
-  fs.writeFileSync(path.join(memoryDir, "repo.json"), JSON.stringify({ workspace_root: repoDir }, null, 2) + "\n", "utf8");
   fs.writeFileSync(
     path.join(syncedThreadsDir, "thread-index.json"),
     JSON.stringify([

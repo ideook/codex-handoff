@@ -2,7 +2,6 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const { canonicalizeRepoPath, configPath, normalizeComparablePath, readJsonFile } = require("../service/common");
-const { DEFAULT_REMOTE_AUTH_PATH, DEFAULT_REMOTE_AUTH_TYPE } = require("./repo-auth");
 
 function loadConfig(configDir) {
   return normalizeConfig(readJsonFile(configPath(configDir), {}));
@@ -48,19 +47,8 @@ function normalizeRepoMappings(reposPayload) {
     normalized[canonicalKey] = {
       ...existingState,
       repo_slug: existingState.repo_slug || nextState.repo_slug,
-      repo_slug_aliases: Array.isArray(existingState.repo_slug_aliases) && existingState.repo_slug_aliases.length
-        ? existingState.repo_slug_aliases
-        : nextState.repo_slug_aliases,
-      remote_prefix: existingState.remote_prefix || nextState.remote_prefix,
       summary_mode: existingState.summary_mode || nextState.summary_mode,
-      match_mode: existingState.match_mode || nextState.match_mode,
-      match_status: existingState.match_status || nextState.match_status,
       include_raw_threads: existingState.include_raw_threads === true || nextState.include_raw_threads === true,
-      remote_auth_type: existingState.remote_auth_type || nextState.remote_auth_type,
-      remote_auth_path: existingState.remote_auth_path || nextState.remote_auth_path,
-      project_name: existingState.project_name || nextState.project_name,
-      workspace_root: existingState.workspace_root || nextState.workspace_root,
-      machine_id: existingState.machine_id || nextState.machine_id,
       git_origin_url: existingState.git_origin_url || nextState.git_origin_url || null,
       git_origin_urls: Array.isArray(existingState.git_origin_urls) && existingState.git_origin_urls.length
         ? existingState.git_origin_urls
@@ -72,15 +60,15 @@ function normalizeRepoMappings(reposPayload) {
 }
 
 function normalizeRepoMappingState(repoState, canonicalRepoPath) {
-  const normalized = { ...(repoState || {}) };
-  delete normalized.remote_profile;
-  normalized.remote_auth_type = DEFAULT_REMOTE_AUTH_TYPE;
-  normalized.remote_auth_path = DEFAULT_REMOTE_AUTH_PATH;
-  normalized.workspace_root = canonicalRepoPath;
-  normalized.repo_slug_aliases = Array.isArray(normalized.repo_slug_aliases) ? normalized.repo_slug_aliases.filter(Boolean) : [];
-  normalized.git_origin_url = normalized.git_origin_url || null;
-  normalized.git_origin_urls = Array.isArray(normalized.git_origin_urls) ? normalized.git_origin_urls.filter(Boolean) : [];
-  return normalized;
+  const input = { ...(repoState || {}) };
+  return {
+    repo_slug: input.repo_slug || null,
+    summary_mode: input.summary_mode || "auto",
+    include_raw_threads: input.include_raw_threads === true,
+    git_origin_url: input.git_origin_url || null,
+    git_origin_urls: Array.isArray(input.git_origin_urls) ? input.git_origin_urls.filter(Boolean) : [],
+    updated_at: input.updated_at || null,
+  };
 }
 
 function repoStateUpdatedAt(repoState) {

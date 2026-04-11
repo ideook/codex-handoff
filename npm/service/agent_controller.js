@@ -2,6 +2,7 @@ class AgentController {
   constructor({
     detectCodexProcesses,
     performStartupSync,
+    performBackgroundRefresh,
     performShutdownSync,
     activateWatcher,
     deactivateWatcher,
@@ -11,6 +12,7 @@ class AgentController {
   }) {
     this.detectCodexProcesses = detectCodexProcesses;
     this.performStartupSync = performStartupSync;
+    this.performBackgroundRefresh = performBackgroundRefresh || (async () => ({ skipped: true }));
     this.performShutdownSync = performShutdownSync || (async () => ({ skipped: true }));
     this.activateWatcher = activateWatcher;
     this.deactivateWatcher = deactivateWatcher;
@@ -140,6 +142,7 @@ class AgentController {
         watcher: this.watcher,
         codex_running: true,
       });
+      await this.performBackgroundRefresh();
       return;
     }
     await this.enterIdleState({
@@ -148,6 +151,7 @@ class AgentController {
       watcher: this.watcher,
       codex_running: running,
     });
+    await this.performBackgroundRefresh();
   }
 
   async startWatching() {

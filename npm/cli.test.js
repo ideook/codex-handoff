@@ -6,9 +6,11 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 
 const { parseArgs, resolveRepoSlug } = require("./cli");
-const { buildRepoState } = require("./lib/workspace");
+const { buildRepoState, saveRepoState } = require("./lib/workspace");
 
 const cliPath = path.join(__dirname, "bin", "codex-handoff.js");
+const TEST_CONFIG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "codex-handoff-cli-config-"));
+process.env.CODEX_HANDOFF_CONFIG_DIR = TEST_CONFIG_DIR;
 
 function makeFixtureRepo() {
   const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-handoff-cli-"));
@@ -47,23 +49,15 @@ function makeFixtureRepo() {
     ].join("\n"),
     "utf8",
   );
-  fs.writeFileSync(
-    path.join(memoryDir, "repo.json"),
-    JSON.stringify(
-      {
-        repo_path: repoDir,
-        repo_slug: "fixture-remote",
-        remote_auth_type: "global_dotenv",
-        remote_auth_path: "~/.codex-handoff/.env.local",
-        remote_prefix: "repos/fixture-remote/",
-        summary_mode: "heuristic",
-        include_raw_threads: false,
-      },
-      null,
-      2,
-    ) + "\n",
-    "utf8",
-  );
+  saveRepoState(memoryDir, {
+    repo_path: repoDir,
+    repo_slug: "fixture-remote",
+    remote_auth_type: "global_dotenv",
+    remote_auth_path: "~/.codex-handoff/.env.local",
+    remote_prefix: "repos/fixture-remote/",
+    summary_mode: "heuristic",
+    include_raw_threads: false,
+  }, { repoPath: repoDir, configDir: TEST_CONFIG_DIR });
   fs.writeFileSync(
     path.join(memoryDir, "sync-state.json"),
     JSON.stringify(
@@ -161,17 +155,13 @@ test("resolveRepoSlug preserves an attached repo's existing remote slug after gi
   fs.mkdirSync(memoryDir, { recursive: true });
   runGit(repoDir, "init");
   runGit(repoDir, "remote", "add", "origin", "https://github.com/brdgkr/codex-handoff.git");
-  fs.writeFileSync(
-    path.join(memoryDir, "repo.json"),
-    JSON.stringify({
-      repo_slug: "ideook-codex-handoff",
-      remote_prefix: "repos/ideook-codex-handoff/",
-      match_status: "create_new",
-      git_origin_url: "https://github.com/brdgkr/codex-handoff.git",
-      git_origin_urls: ["https://github.com/ideook/codex-handoff.git"],
-    }, null, 2) + "\n",
-    "utf8",
-  );
+  saveRepoState(memoryDir, {
+    repo_slug: "ideook-codex-handoff",
+    remote_prefix: "repos/ideook-codex-handoff/",
+    match_status: "create_new",
+    git_origin_url: "https://github.com/brdgkr/codex-handoff.git",
+    git_origin_urls: ["https://github.com/ideook/codex-handoff.git"],
+  }, { repoPath: repoDir, configDir: TEST_CONFIG_DIR });
 
   const result = resolveRepoSlug(repoDir, memoryDir, {}, [
     { repo_slug: "ideook-codex-handoff" },
@@ -210,14 +200,10 @@ test("resolveRepoSlug keeps the attached remote slug even if the inferred git-or
   fs.mkdirSync(memoryDir, { recursive: true });
   runGit(repoDir, "init");
   runGit(repoDir, "remote", "add", "origin", "https://github.com/brdgkr/codex-handoff.git");
-  fs.writeFileSync(
-    path.join(memoryDir, "repo.json"),
-    JSON.stringify({
-      repo_slug: "ideook-codex-handoff",
-      match_status: "create_new",
-    }, null, 2) + "\n",
-    "utf8",
-  );
+  saveRepoState(memoryDir, {
+    repo_slug: "ideook-codex-handoff",
+    match_status: "create_new",
+  }, { repoPath: repoDir, configDir: TEST_CONFIG_DIR });
 
   const result = resolveRepoSlug(repoDir, memoryDir, {}, [
     { repo_slug: "ideook-codex-handoff", git_origin_url: "https://github.com/brdgkr/codex-handoff.git" },
@@ -235,14 +221,10 @@ test("resolveRepoSlug preserves an explicit local remote slug selection", () => 
   fs.mkdirSync(memoryDir, { recursive: true });
   runGit(repoDir, "init");
   runGit(repoDir, "remote", "add", "origin", "https://github.com/brdgkr/codex-handoff.git");
-  fs.writeFileSync(
-    path.join(memoryDir, "repo.json"),
-    JSON.stringify({
-      repo_slug: "ideook-codex-handoff",
-      match_status: "explicit",
-    }, null, 2) + "\n",
-    "utf8",
-  );
+  saveRepoState(memoryDir, {
+    repo_slug: "ideook-codex-handoff",
+    match_status: "explicit",
+  }, { repoPath: repoDir, configDir: TEST_CONFIG_DIR });
 
   const result = resolveRepoSlug(repoDir, memoryDir, {}, [
     { repo_slug: "ideook-codex-handoff" },
@@ -404,11 +386,6 @@ test("CLI uninstall detaches the repo and preserves local memory", () => {
   const memoryDir = path.join(repoDir, ".codex-handoff");
   fs.mkdirSync(memoryDir, { recursive: true });
   fs.writeFileSync(
-    path.join(memoryDir, "repo.json"),
-    JSON.stringify({ repo_slug: "fixture-remote", remote_auth_type: "global_dotenv", remote_auth_path: "~/.codex-handoff/.env.local" }, null, 2) + "\n",
-    "utf8",
-  );
-  fs.writeFileSync(
     path.join(repoDir, "AGENTS.md"),
     [
       "# Local instructions",
@@ -424,6 +401,7 @@ test("CLI uninstall detaches the repo and preserves local memory", () => {
 
   const configDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-handoff-config-"));
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-handoff-home-"));
+  saveRepoState(memoryDir, { repo_slug: "fixture-remote" }, { repoPath: repoDir, configDir });
   fs.writeFileSync(
     path.join(configDir, "config.json"),
     JSON.stringify(
@@ -507,15 +485,6 @@ test("CLI doctor refreshes config repo metadata when git origin changes", () => 
   runGit(repoDir, "init");
   runGit(repoDir, "remote", "add", "origin", "https://github.com/ideook/codex-handoff.git");
   fs.writeFileSync(
-    path.join(memoryDir, "repo.json"),
-    JSON.stringify({
-      repo_slug: "ideook-codex-handoff",
-      remote_prefix: "repos/ideook-codex-handoff/",
-      git_origin_url: "https://github.com/ideook/codex-handoff.git",
-    }, null, 2) + "\n",
-    "utf8",
-  );
-  fs.writeFileSync(
     path.join(configDir, "config.json"),
     JSON.stringify({
       repos: {
@@ -546,4 +515,43 @@ test("CLI doctor refreshes config repo metadata when git origin changes", () => 
   const persisted = JSON.parse(fs.readFileSync(path.join(configDir, "config.json"), "utf8"));
   assert.equal(persisted.repos[repoDir].git_origin_url, "https://github.com/brdgkr/codex-handoff.git");
   assert.deepEqual(persisted.repos[repoDir].git_origin_urls, ["https://github.com/ideook/codex-handoff.git"]);
+});
+
+test("CLI doctor validates config mapping without recreating a local repo.json file", () => {
+  const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-handoff-doctor-recreate-repo-state-"));
+  const memoryDir = path.join(repoDir, ".codex-handoff");
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-handoff-config-"));
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-handoff-home-"));
+  fs.mkdirSync(memoryDir, { recursive: true });
+  runGit(repoDir, "init");
+  runGit(repoDir, "remote", "add", "origin", "https://github.com/brdgkr/codex-handoff.git");
+  fs.writeFileSync(
+    path.join(configDir, "config.json"),
+    JSON.stringify({
+      repos: {
+        [repoDir]: {
+          repo_slug: "ideook-codex-handoff",
+          git_origin_url: "https://github.com/ideook/codex-handoff.git",
+          git_origin_urls: [],
+        },
+      },
+    }, null, 2) + "\n",
+    "utf8",
+  );
+
+  execFileSync(process.execPath, [cliPath, "--repo", repoDir, "doctor"], {
+    cwd: path.join(__dirname, ".."),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: homeDir,
+      CODEX_HANDOFF_CONFIG_DIR: configDir,
+      NODE_NO_WARNINGS: "1",
+    },
+  });
+
+  const persisted = JSON.parse(fs.readFileSync(path.join(configDir, "config.json"), "utf8"));
+  assert.equal(fs.existsSync(path.join(memoryDir, "repo.json")), false);
+  assert.equal(persisted.repos[repoDir].repo_slug, "brdgkr-codex-handoff");
+  assert.equal(persisted.repos[repoDir].git_origin_url, "https://github.com/brdgkr/codex-handoff.git");
 });

@@ -33,8 +33,8 @@ test("loadConfig dedupes Windows repo path variants by normalized path", () => {
   const config = loadConfig(configDir);
   assert.deepEqual(Object.keys(config.repos), ["D:\\source\\repos\\ideook\\codex-handoff"]);
   assert.equal(config.repos["D:\\source\\repos\\ideook\\codex-handoff"].repo_slug, "new-entry");
-  assert.equal(config.repos["D:\\source\\repos\\ideook\\codex-handoff"].remote_auth_type, "global_dotenv");
-  assert.equal(config.repos["D:\\source\\repos\\ideook\\codex-handoff"].remote_auth_path, "~/.codex-handoff/.env.local");
+  assert.equal(config.repos["D:\\source\\repos\\ideook\\codex-handoff"].summary_mode, "auto");
+  assert.equal(config.repos["D:\\source\\repos\\ideook\\codex-handoff"].include_raw_threads, false);
 });
 
 test("saveConfig writes normalized repo mapping keys", () => {

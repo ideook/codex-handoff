@@ -87,6 +87,42 @@ function ensureSingleton(configDir) {
   }
 }
 
+function repoStateMetadataChanged(previousRepoState, repoState) {
+  return (
+    previousRepoState.git_origin_url !== repoState.git_origin_url ||
+    JSON.stringify(previousRepoState.git_origin_urls || []) !== JSON.stringify(repoState.git_origin_urls || []) ||
+    previousRepoState.repo_path !== repoState.repo_path ||
+    previousRepoState.workspace_root !== repoState.workspace_root
+  );
+}
+
+async function runBackgroundRepoMetadataRefresh(configDir, logger) {
+  const managedRepos = loadManagedRepos(configDir).filter((repo) => fs.existsSync(repo.repoPath));
+  let refreshedRepoCount = 0;
+  let remoteUpdatedRepoCount = 0;
+  for (const repo of managedRepos) {
+    const memoryDir = path.join(repo.repoPath, ".codex-handoff");
+    const previousRepoState = loadRepoState(memoryDir);
+    const repoState = ensureManagedRepoState(memoryDir, repo, { configDir });
+    if (!repoState?.repo_slug || !repoStateMetadataChanged(previousRepoState, repoState)) {
+      continue;
+    }
+    refreshedRepoCount += 1;
+    logger.write(`background repo metadata refresh ${repo.repoPath}: git_origin_url=${repoState.git_origin_url || ""}`);
+    try {
+      const profile = loadRepoR2Profile(memoryDir);
+      await pushRepoControlFiles(profile, memoryDir, [repoState.remote_prefix], ["manifest.json"]);
+      remoteUpdatedRepoCount += 1;
+    } catch (error) {
+      logger.write(`background repo metadata remote update skipped ${repo.repoPath}: ${error.message}`);
+    }
+  }
+  return {
+    refreshed_repo_count: refreshedRepoCount,
+    remote_updated_repo_count: remoteUpdatedRepoCount,
+  };
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const logger = createLogger(options.configDir);
@@ -157,6 +193,7 @@ async function main() {
       };
     },
     performStartupSync: async () => runStartupSync(options.configDir, options.codexHome, logger),
+    performBackgroundRefresh: async () => runBackgroundRepoMetadataRefresh(options.configDir, logger),
     performShutdownSync: async () => runShutdownSync(options.configDir, options.codexHome, logger),
     writeState: async (payload) => {
       writeState(options.configDir, payload);
@@ -241,11 +278,7 @@ async function runStartupSync(configDir, codexHome, logger) {
     const memoryDir = path.join(repo.repoPath, ".codex-handoff");
     const previousRepoState = loadRepoState(memoryDir);
     const repoState = ensureManagedRepoState(memoryDir, repo, { configDir });
-    const repoStateChanged =
-      previousRepoState.git_origin_url !== repoState.git_origin_url ||
-      JSON.stringify(previousRepoState.git_origin_urls || []) !== JSON.stringify(repoState.git_origin_urls || []) ||
-      previousRepoState.repo_path !== repoState.repo_path ||
-      previousRepoState.workspace_root !== repoState.workspace_root;
+    const repoStateChanged = repoStateMetadataChanged(previousRepoState, repoState);
     if (!repoState?.repo_slug || !repoState?.remote_prefix) {
       skippedRepoCount += 1;
       recordManagedRepoEvent(configDir, "startup_sync_repo", {
@@ -259,7 +292,7 @@ async function runStartupSync(configDir, codexHome, logger) {
     try {
       const profile = loadRepoR2Profile(memoryDir);
       if (repoStateChanged) {
-        await pushRepoControlFiles(profile, memoryDir, [repoState.remote_prefix], ["repo.json"]);
+        await pushRepoControlFiles(profile, memoryDir, [repoState.remote_prefix], ["manifest.json"]);
       }
       const recoveryDir = localThreadsDir(memoryDir);
       const recoveryLocalResult = buildLocalResultFromMemoryDir(recoveryDir);

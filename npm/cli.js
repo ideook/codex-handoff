@@ -65,6 +65,7 @@ const {
 } = require("./lib/workspace");
 const { deleteR2Object, getR2Object, listR2Objects, putR2Object, validateR2Credentials } = require("./lib/r2");
 const { configPath, lifecycleLockPath, packageVersionFromHere, resolveCodexHome, resolveConfigDir } = require("./service/common");
+const { ensureManagedRepoState, loadManagedRepos } = require("./service/repo_registry");
 
 const PACKAGE_VERSION = packageVersionFromHere(__filename);
 
@@ -841,6 +842,12 @@ function persistRepoStateToConfig(configDir, repoPath, repoState) {
 }
 
 function loadCurrentRepoState(repoPath, memoryDir, configDir = null, { required = false } = {}) {
+  if (configDir) {
+    const managedRepo = loadManagedRepos(configDir).find((item) => path.resolve(item.repoPath) === path.resolve(repoPath)) || null;
+    if (managedRepo) {
+      return ensureManagedRepoState(memoryDir, managedRepo, { configDir });
+    }
+  }
   const repoState = required ? requireRepoState(memoryDir) : loadRepoState(memoryDir);
   if (!Object.keys(repoState).length) {
     return repoState;
@@ -912,7 +919,7 @@ async function listRemoteRepoDetails(profile) {
 }
 
 async function fetchRemoteRepoDetail(profile, slug) {
-  for (const candidate of [`repos/${slug}/repo.json`, `repos/${slug}/manifest.json`]) {
+  for (const candidate of [`repos/${slug}/manifest.json`]) {
     try {
       const payload = JSON.parse((await getR2Object(profile, candidate)).toString("utf8"));
       return normalizeRemoteRepoDetail({

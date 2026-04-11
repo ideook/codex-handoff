@@ -143,7 +143,7 @@ async function main() {
         mirrorOnSuccess: false,
       });
       if (!authError && profile && repoStateChanged) {
-        await pushRepoControlFiles(profile, memoryDir, [repoState.remote_prefix], ["repo.json"]);
+        await pushRepoControlFiles(profile, memoryDir, [repoState.remote_prefix], ["manifest.json"]);
       }
       if (authError) {
         log(`remote push skipped ${repo.repoPath}: ${authError.message}`, serviceLogPath);
