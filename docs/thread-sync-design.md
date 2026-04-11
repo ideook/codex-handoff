@@ -1,218 +1,101 @@
 # Thread Sync Design
 
-This document defines the intended sync architecture for `codex-handoff`.
+This document defines the current thread sync architecture for `codex-handoff`.
 
-The target use case is serial handoff across machines for one human using Codex. The thing being handed off is not only a summary and not only a transcript. The remote payload must preserve:
+## Scope
 
-- the optional original Codex session source used for full thread reconstruction
-- the derived handoff artifacts needed to resume work efficiently
-- the normalized metadata needed to make the thread visible again in Codex on another machine
+This document covers thread payload sync only.
 
-## Design decision
+Repo memory is defined separately in
+[Repo Memory Design](repo-memory-design.md).
 
-Default sync excludes the original session document. Raw source sync is opt-in via `--include-raw-threads`.
+## Local Layout
 
-The remote source of truth for a thread is a normalized thread bundle, not a copied local SQLite database and not a copied local `session_index.jsonl`.
-
-That bundle contains:
-
-- optional raw source session content
-- derived handoff files
-- normalized metadata for Codex-local materialization
-
-## What is actually synced
-
-The product should not sync arbitrary folders.
-
-The sync inputs are:
-
-- repo-local `.codex-handoff/`
-- Codex session jsonl files for threads related to the repo
-- thread metadata discovered from the local thread list and session index
-
-The sync should not use SQLite as the remote source of truth.
-SQLite is read locally to discover thread metadata and written locally again on pull so Codex can see the restored thread.
-
-## Local Codex sources
-
-Expected local discovery sources:
-
-- `~/.codex/state_5.sqlite`
-  - `threads` table
-  - used to discover `id`, `title`, `cwd`, `rollout_path`, `updated_at`
-- `~/.codex/session_index.jsonl`
-  - used to discover `thread_name`, `id`, `updated_at`
-- `~/.codex/sessions/.../*.jsonl`
-  - original Codex session data
-
-## Local handoff layout
-
-`codex-handoff` should keep both a per-thread store and a root materialized view.
+Thread payloads are split by role under `.codex-handoff/`:
 
 ```text
 .codex-handoff/
   repo.json
-  latest.md
-  handoff.json
-  raw/
-    session.jsonl
-  threads/
-    <thread-id>/
-      manifest.json
-      latest.md
-      handoff.json
-      raw/
-        session.jsonl
-      source/
-        rollout.jsonl.gz
-        index-entry.json
-        thread-record.json
+  memory.md
+  memory-state.json
   sync-state.json
-  conflicts/
+  synced-threads/
+    latest.md
+    handoff.json
+    thread-index.json
+    current-thread.json
+    threads/
+      <thread-id>.jsonl
+      <thread-id>.rollout.jsonl.gz
+  local-threads/
+    latest.md
+    handoff.json
+    thread-index.json
+    current-thread.json
+    threads/
+      <thread-id>.jsonl
+      <thread-id>.rollout.jsonl.gz
 ```
 
-Rules:
+Meaning:
 
-- `.codex-handoff/threads/<thread-id>/...` is the persistent local mirror for that thread
-- root `latest.md`, `handoff.json`, and `raw/session.jsonl` are a materialized view of the currently selected thread
-- `source/` stores optional original session source plus normalized Codex metadata needed for local reconstruction
-- the existing reader CLI continues to read the root view
+- `synced-threads` stores pulled thread payloads used for restore reads.
+- `local-threads` stores locally produced thread payloads used for push.
+- root files store repo control-plane state and repo memory.
 
-## Thread bundle contents
+## Remote Layout
 
-Each thread bundle should contain:
-
-- `manifest.json`
-  - `thread_id`
-  - `thread_title`
-  - `thread_name`
-  - `cwd`
-  - `rollout_path`
-  - `updated_at`
-  - `source_session_relpath`
-  - `source_session_sha256`
-  - `revision`
-  - `parent_revision`
-  - `machine_id`
-  - `model_provider`
-- `latest.md`
-  - short current-state summary for that thread
-- `handoff.json`
-  - structured restore state for that thread
-- `raw/session.jsonl`
-  - normalized reader evidence for that thread
-  - should include the important extracted evidence plus the recent conversational tail
-- `source/rollout.jsonl.gz`
-  - optional compressed original Codex session jsonl when raw thread export is enabled
-- `source/index-entry.json`
-  - normalized representation of the `session_index.jsonl` entry required for local materialization
-- `source/thread-record.json`
-  - normalized representation of the SQLite `threads` row required for local materialization
-
-This keeps all three needed views of the same work:
-
-- the original source conversation
-- the derived handoff state
-- the Codex-local metadata needed to surface the thread in the UI
-
-## Remote layout
-
-The remote bucket should be keyed by repo identity first and thread id second.
+The remote bucket remains repo-oriented:
 
 ```text
 repos/<repo-slug>/
-  manifest.json
-  thread-index.json
-  current-thread.json
-  memory.md
-  memory-state.json
-  threads/
-    <thread-id>/
-      manifest.json
-      latest.md
-      handoff.json
-      raw/session.jsonl
-      source/
-        rollout.jsonl.gz
-        index-entry.json
-        thread-record.json
+  repo.json
+  sync-state.json
+  machine-sources/
+    <machine-id>/
+      threads/
+        <thread-id>.jsonl
+        <thread-id>.rollout.jsonl.gz
 ```
 
-Where:
+Meaning:
 
-- `manifest.json` stores repo-level metadata and sync revision info
-- `thread-index.json` lists known threads for the repo
-- `current-thread.json` points to the thread that should be materialized after pull
-- `memory.md` stores compact repo-level memory intended for default consumer reads
-- `memory-state.json` records summarization inputs and update metadata
+- remote root stores repo-level control state
+- machine-specific thread payloads live under `machine-sources/<machine-id>/`
 
-## Attach and scan model
+## Push Model
 
-The user-facing unit is the repo.
-The sync unit is the thread bundle.
+On the producing machine:
 
-Attach flow:
+1. Discover repo-related Codex threads from local SQLite and session index data.
+2. Export normalized transcript bundles into `.codex-handoff/local-threads/threads/`.
+3. Update `.codex-handoff/local-threads/thread-index.json` and `.codex-handoff/local-threads/current-thread.json`.
+4. Upload local thread payloads to `repos/<repo-slug>/machine-sources/<machine-id>/threads/`.
+5. Do not summarize or upload repo memory during sender-side thread sync.
 
-1. User runs `codex-handoff setup --repo <path>` or `codex-handoff attach --repo <path>`.
-2. `codex-handoff` records the repo slug and remote prefix.
-3. `codex-handoff threads scan --repo <path>` reads local thread metadata.
-4. Threads whose `cwd` matches the repo are candidates for sync.
-5. The selected thread bundles are exported under `.codex-handoff/threads/`.
+## Pull Model
 
-## Push model
+On the consuming machine:
 
-On the source machine:
+1. Push existing local thread payloads to remote as startup recovery.
+2. Pull remote thread payloads from all machines into `.codex-handoff/synced-threads/`.
+3. Rebuild `synced-threads/thread-index.json` and `synced-threads/current-thread.json`.
+4. Import the selected thread into local Codex state when requested by the flow.
 
-1. Discover repo-related threads from local SQLite and session index data.
-2. Read the original session jsonl path for each thread.
-3. Extract normalized metadata for `session_index.jsonl` and the SQLite `threads` row.
-4. Generate thread-specific `latest.md`, `handoff.json`, and `raw/session.jsonl`.
-5. When raw thread export is enabled, compress the original session jsonl as `source/rollout.jsonl.gz`.
-6. Upload the thread bundle to the repo-specific prefix in R2.
+## Reader Model
 
-## Pull and materialize model
+Default restore reads use:
 
-On another machine:
+- root `memory.md`
+- `synced-threads/thread-index.json`
+- specific files under `synced-threads/threads/` when deeper evidence is needed
 
-1. Pull the repo prefix from R2.
-2. Store each remote thread bundle under `.codex-handoff/threads/<thread-id>/`.
-3. If present, restore `source/rollout.jsonl.gz` into the appropriate `~/.codex/sessions/...` location.
-4. Upsert `source/index-entry.json` into local `~/.codex/session_index.jsonl`.
-5. Upsert `source/thread-record.json` into local `~/.codex/state_5.sqlite`.
-6. Read `current-thread.json`.
-7. Materialize that thread's `latest.md`, `handoff.json`, and `raw/session.jsonl` into the root `.codex-handoff/`.
-8. Verify that the thread is visible in Codex and that the reader CLI can run against the root view.
+Default restore reads must not depend on `local-threads`.
 
-This lets both recovery paths work:
+## Non-Goals
 
-- Codex can see the restored thread through its own local storage
-- `codex-handoff` can immediately bootstrap from the root `.codex-handoff/` view
+This design does not:
 
-## Agent commands
-
-Recommended future command surface:
-
-- `codex-handoff setup --repo <path>`
-- `codex-handoff attach --repo <path>`
-- `codex-handoff threads scan --repo <path>`
-- `codex-handoff threads list --repo <path>`
-- `codex-handoff threads export --repo <path> --thread <id>`
-- `codex-handoff threads use --repo <path> --thread <id>`
-- `codex-handoff sync push --repo <path>`
-- `codex-handoff sync pull --repo <path>`
-- `codex-handoff sync now --repo <path>`
-- `codex-handoff agent start`
-- `codex-handoff agent status`
-
-## Conflict policy
-
-This product is for serial handoff between machines.
-
-Conflict rules:
-
-- always pull before first push on a machine
-- keep `source/rollout.jsonl.gz` immutable for a given revision
-- if both sides changed thread summaries, keep both and write a conflict snapshot
-- never silently overwrite a remote thread bundle that advanced after the last local pull
-- never treat copied local SQLite or `session_index.jsonl` files as the remote source of truth
-- always rebuild local Codex-visible records from normalized bundle metadata
+- sync arbitrary repo files
+- use SQLite as the remote source of truth
+- treat repo memory as thread payload data

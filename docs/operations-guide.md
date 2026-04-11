@@ -70,19 +70,22 @@ While Codex is open:
 1. the agent detects the main Codex app process
 2. the watcher monitors `~/.codex/sessions/**/rollout-*.jsonl`
 3. rollout changes are mapped to repos using `session_meta.payload.cwd`
-4. canonical user and assistant messages are extracted into thread bundles under
-   `.codex-handoff/threads/`
-5. the repo-scoped handoff tree is pushed to the configured remote prefix
-6. sync results are recorded in `.codex-handoff/sync-state.json`
+4. canonical user and assistant messages are extracted into the local
+   thread publish cache under `.codex-handoff/local-threads/threads/`
+5. local thread payloads are pushed to the configured remote prefix
+6. the watcher continues while the Codex app process is alive, even if the app window is hidden
+7. pulled remote thread state remains under `.codex-handoff/synced-threads/` as the default thread read cache
+8. sync results are recorded in `.codex-handoff/sync-state.json`
 
 When the Codex app/window is no longer detected, the agent performs one final
 producer pass before stopping the watcher:
 
-1. export the repo's deterministic thread bundles again from local Codex state
-2. run isolated AI-assisted memory summarization for `.codex-handoff/memory.md`
-3. write `.codex-handoff/memory-state.json`
-4. push the updated handoff tree to the remote so consumer PCs can read the
-   compact root memory without scanning `.codex-handoff/threads/**`
+1. stop the watcher
+2. stop without rewriting `.codex-handoff/local-threads/`
+3. stop without attempting repo memory summarization
+
+Consumer-side memory is generated later from `.codex-handoff/synced-threads/`
+in explicit pull flows such as `receive`, `sync pull`, and pull-based `setup`.
 
 ## Important Files
 
@@ -90,12 +93,11 @@ producer pass before stopping the watcher:
 
 - `.codex-handoff/repo.json`
 - `.codex-handoff/.env.local`
-- `.codex-handoff/thread-index.json`
-- `.codex-handoff/current-thread.json`
+- `.codex-handoff/synced-threads/`
+- `.codex-handoff/local-threads/`
 - `.codex-handoff/memory.md`
 - `.codex-handoff/memory-state.json`
 - `.codex-handoff/sync-state.json`
-- `.codex-handoff/threads/*.json`
 
 ### Global runtime files
 

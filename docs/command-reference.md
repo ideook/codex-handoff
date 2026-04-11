@@ -129,7 +129,7 @@ Find local Codex threads whose `cwd` matches the current repo.
 
 ### `codex-handoff threads export`
 
-Export matching threads into `.codex-handoff/threads/`.
+Export matching threads into `.codex-handoff/local-threads/`.
 
 ### `codex-handoff threads import`
 

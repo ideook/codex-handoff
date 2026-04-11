@@ -150,9 +150,9 @@ Useful commands:
 
 When the user asks to continue previous work in a synced repo:
 
-1. Read `.codex-handoff/latest.md`
-2. Read `.codex-handoff/memory.md` if it exists; it is the compact repo-level memory intended for new sessions.
-3. If needed, inspect `.codex-handoff/handoff.json`
+1. Read `.codex-handoff/memory.md` if it exists; it is the compact repo-level memory intended for new sessions.
+2. If needed, inspect `.codex-handoff/synced-threads/latest.md`.
+3. If needed, inspect `.codex-handoff/synced-threads/handoff.json`
 4. If the bootstrap summary is not enough, run:
    `codex-handoff --repo . resume --goal "<user-goal>"`
 5. Keep evidence usage targeted through:
@@ -165,5 +165,5 @@ When the user asks to continue previous work in a synced repo:
 - Prefer `doctor`, `setup`, and `receive` over ad hoc filesystem searches.
 - Pull before the first push on a new machine.
 - Treat `.codex-handoff` as derived handoff state, not the original Codex source of truth.
-- When the user only wants to continue from synced summaries, prefer `.codex-handoff/latest.md`, `.codex-handoff/memory.md`, and `.codex-handoff/handoff.json` over full raw thread restoration.
-- Do not enumerate or bulk-read `.codex-handoff/threads/**`; inspect a specific thread only when memory, handoff state, or the user points to that exact thread.
+- When the user only wants to continue from synced summaries, prefer `.codex-handoff/memory.md` and `.codex-handoff/synced-threads/handoff.json` over full raw thread restoration.
+- Do not enumerate or bulk-read `.codex-handoff/synced-threads/threads/**`; inspect a specific thread only when memory, handoff state, or the user points to that exact thread.

@@ -4,24 +4,26 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { memoryPath, memoryStatePath, summarizeMemoryWithCodex } = require("./memory");
+const { memoryPath, memoryStatePath, refreshLocalMemory, summarizeMemoryWithCodex } = require("./memory");
 
 function makeRepo() {
   const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-handoff-memory-repo-"));
   const memoryDir = path.join(repoDir, ".codex-handoff");
-  fs.mkdirSync(path.join(memoryDir, "threads"), { recursive: true });
-  fs.writeFileSync(path.join(memoryDir, "latest.md"), "# Latest\n\nCurrent work.\n", "utf8");
-  fs.writeFileSync(path.join(memoryDir, "handoff.json"), JSON.stringify({ current_goal: "memory tests" }, null, 2) + "\n", "utf8");
+  const syncedThreadsDir = path.join(memoryDir, "synced-threads");
+  fs.mkdirSync(path.join(syncedThreadsDir, "threads"), { recursive: true });
+  fs.writeFileSync(path.join(syncedThreadsDir, "latest.md"), "# Latest\n\nCurrent work.\n", "utf8");
+  fs.writeFileSync(path.join(syncedThreadsDir, "handoff.json"), JSON.stringify({ current_goal: "memory tests" }, null, 2) + "\n", "utf8");
+  fs.writeFileSync(path.join(memoryDir, "repo.json"), JSON.stringify({ workspace_root: repoDir }, null, 2) + "\n", "utf8");
   fs.writeFileSync(
-    path.join(memoryDir, "thread-index.json"),
+    path.join(syncedThreadsDir, "thread-index.json"),
     JSON.stringify([
       { thread_id: "thread-1", title: "First", updated_at: "2026-01-02T00:00:00.000Z" },
       { thread_id: "thread-2", title: "Second", updated_at: "2026-01-01T00:00:00.000Z" },
     ], null, 2) + "\n",
     "utf8",
   );
-  fs.writeFileSync(path.join(memoryDir, "threads", "thread-1.json"), JSON.stringify([{ role: "user", message: "hello" }], null, 2) + "\n", "utf8");
-  fs.writeFileSync(path.join(memoryDir, "threads", "thread-2.json"), JSON.stringify([{ role: "user", message: "old" }], null, 2) + "\n", "utf8");
+  fs.writeFileSync(path.join(syncedThreadsDir, "threads", "thread-1.jsonl"), `${JSON.stringify({ role: "user", message: "hello" })}\n`, "utf8");
+  fs.writeFileSync(path.join(syncedThreadsDir, "threads", "thread-2.jsonl"), `${JSON.stringify({ role: "user", message: "old" })}\n`, "utf8");
   return { repoDir, memoryDir };
 }
 
@@ -84,4 +86,57 @@ test("summarizeMemoryWithCodex dry run returns summary without writing root memo
   assert.match(result.summary, /# Fake Memory/);
   assert.equal(fs.existsSync(memoryPath(memoryDir)), false);
   assert.equal(fs.existsSync(memoryStatePath(memoryDir)), false);
+});
+
+test("refreshLocalMemory writes root memory from synced threads when missing", () => {
+  const { repoDir, memoryDir } = makeRepo();
+  const fakeCodex = makeFakeCodex();
+  const result = refreshLocalMemory(repoDir, memoryDir, {
+    codexBin: fakeCodex,
+    timeoutMs: 5000,
+  });
+
+  assert.equal(result.refreshed, true);
+  assert.equal(result.skipped, false);
+  assert.equal(fs.existsSync(memoryPath(memoryDir)), true);
+  assert.equal(fs.existsSync(memoryStatePath(memoryDir)), true);
+});
+
+test("refreshLocalMemory skips when root memory is already current", () => {
+  const { repoDir, memoryDir } = makeRepo();
+  const fakeCodex = makeFakeCodex();
+  const first = refreshLocalMemory(repoDir, memoryDir, {
+    codexBin: fakeCodex,
+    timeoutMs: 5000,
+  });
+  const second = refreshLocalMemory(repoDir, memoryDir, {
+    codexBin: fakeCodex,
+    timeoutMs: 5000,
+  });
+
+  assert.equal(first.refreshed, true);
+  assert.equal(second.refreshed, false);
+  assert.equal(second.reason, "not_needed");
+});
+
+test("refreshLocalMemory regenerates when the prior memory used a different input source", () => {
+  const { repoDir, memoryDir } = makeRepo();
+  const fakeCodex = makeFakeCodex();
+  const first = refreshLocalMemory(repoDir, memoryDir, {
+    codexBin: fakeCodex,
+    timeoutMs: 5000,
+  });
+  const statePath = memoryStatePath(memoryDir);
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  state.input_manifest.input_memory_dir = path.join(memoryDir, "local-threads");
+  fs.writeFileSync(statePath, JSON.stringify(state, null, 2) + "\n", "utf8");
+
+  const second = refreshLocalMemory(repoDir, memoryDir, {
+    codexBin: fakeCodex,
+    timeoutMs: 5000,
+  });
+
+  assert.equal(first.refreshed, true);
+  assert.equal(second.refreshed, true);
+  assert.equal(second.skipped, false);
 });

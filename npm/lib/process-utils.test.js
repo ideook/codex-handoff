@@ -52,7 +52,7 @@ test("isCodexAppProcess rejects non-app codex binaries such as extension app-ser
   );
 });
 
-test("detectCodexProcesses keeps only visible macOS main app processes when window state is known", () => {
+test("detectCodexProcesses keeps macOS main app processes regardless of window visibility", () => {
   const detected = detectCodexProcesses(
     [
       {
@@ -83,6 +83,12 @@ test("detectCodexProcesses keeps only visible macOS main app processes when wind
       name: "Codex",
       command: "/Applications/Codex.app/Contents/MacOS/Codex",
       hasVisibleWindow: true,
+    },
+    {
+      pid: 6,
+      name: "Codex",
+      command: "/Applications/Codex.app/Contents/MacOS/Codex",
+      hasVisibleWindow: false,
     },
   ]);
 });
@@ -125,7 +131,7 @@ test("isCodexAppProcess keeps only the Windows Store main Codex window process",
   );
 });
 
-test("detectCodexProcesses keeps only visible Windows main app processes when window state is known", () => {
+test("detectCodexProcesses keeps Windows main app processes regardless of window visibility", () => {
   const detected = detectCodexProcesses(
     [
       {
@@ -156,6 +162,12 @@ test("detectCodexProcesses keeps only visible Windows main app processes when wi
       name: "Codex.exe",
       command: "\"C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.406.3494.0_x64__2p2nqsd0c76g0\\app\\Codex.exe\"",
       hasVisibleWindow: true,
+    },
+    {
+      pid: 21,
+      name: "Codex.exe",
+      command: "\"C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.406.3494.0_x64__2p2nqsd0c76g0\\app\\Codex.exe\"",
+      hasVisibleWindow: false,
     },
   ]);
 });

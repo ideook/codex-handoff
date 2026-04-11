@@ -3,6 +3,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { loadThreadTranscript, resolveThreadBundlePath, resolveThreadBundleRelPath } = require("./thread-bundles");
+const { syncedThreadsDir, repoStatePath } = require("./workspace");
 
 const DEFAULT_MAX_THREAD_BYTES = 32768;
 const DEFAULT_MAX_DIGEST_THREADS = 100;
@@ -19,6 +20,7 @@ function summarizeMemoryWithCodex(repoPath, memoryDir, options = {}) {
   const normalized = normalizeOptions(options);
   const resolvedRepoPath = path.resolve(repoPath);
   const resolvedMemoryDir = path.resolve(memoryDir);
+  const resolvedInputMemoryDir = path.resolve(normalized.inputMemoryDir || syncedThreadsDir(resolvedMemoryDir));
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-handoff-memory-"));
   const inputDir = path.join(tmpRoot, "input");
   const outputDir = path.join(tmpRoot, "output");
@@ -27,7 +29,7 @@ function summarizeMemoryWithCodex(repoPath, memoryDir, options = {}) {
   fs.mkdirSync(outputDir, { recursive: true });
 
   try {
-    const manifest = prepareMemoryInputs(resolvedRepoPath, resolvedMemoryDir, inputDir, normalized);
+    const manifest = prepareMemoryInputs(resolvedRepoPath, resolvedMemoryDir, resolvedInputMemoryDir, inputDir, normalized);
     const manifestPath = path.join(inputDir, "manifest.json");
     fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf8");
     const prompt = buildMemoryPrompt({
@@ -86,11 +88,38 @@ function summarizeMemoryWithCodex(repoPath, memoryDir, options = {}) {
   }
 }
 
+function refreshLocalMemory(repoPath, memoryDir, options = {}) {
+  const resolvedMemoryDir = path.resolve(memoryDir);
+  const inputMemoryDir = path.resolve(options.inputMemoryDir || syncedThreadsDir(resolvedMemoryDir));
+  if (!options.force && !memoryNeedsRefresh(resolvedMemoryDir, inputMemoryDir)) {
+    return {
+      refreshed: false,
+      skipped: true,
+      reason: "not_needed",
+      memory_path: memoryPath(resolvedMemoryDir),
+      memory_state_path: memoryStatePath(resolvedMemoryDir),
+      input_memory_dir: inputMemoryDir,
+    };
+  }
+  const result = summarizeMemoryWithCodex(repoPath, resolvedMemoryDir, {
+    ...options,
+    inputMemoryDir,
+  });
+  return {
+    ...result,
+    refreshed: true,
+    skipped: false,
+    reason: "refreshed",
+    input_memory_dir: inputMemoryDir,
+  };
+}
+
 function normalizeOptions(options) {
   return {
     codexBin: options.codexBin || process.env.CODEX_HANDOFF_CODEX_BIN || null,
     dryRun: options.dryRun === true,
-    goal: options.goal || "Create a concise repo-level codex-handoff memory summary.",
+    goal: options.goal || "Create a concise local repo memory summary from synced thread payloads.",
+    inputMemoryDir: options.inputMemoryDir || null,
     keepTemp: options.keepTemp === true,
     maxBuffer: positiveIntegerOr(options.maxBuffer, 1024 * 1024 * 16),
     maxDigestThreads: nonNegativeIntegerOr(options.maxDigestThreads, DEFAULT_MAX_DIGEST_THREADS),
@@ -103,17 +132,18 @@ function normalizeOptions(options) {
   };
 }
 
-function prepareMemoryInputs(repoPath, memoryDir, inputDir, options) {
+function prepareMemoryInputs(repoPath, memoryDir, inputMemoryDir, inputDir, options) {
   const copied = [];
   const skipped = [];
-  for (const name of ["latest.md", "handoff.json", "thread-index.json", "current-thread.json", "repo.json"]) {
-    copyMemoryFile(memoryDir, name, path.join(inputDir, name), copied, skipped, { inputDir });
-  }
+  copyFileByPath(repoStatePath(memoryDir), "repo.json", path.join(inputDir, "repo.json"), copied, skipped, { inputDir });
   copyMemoryFile(memoryDir, "memory.md", path.join(inputDir, "previous-memory.md"), copied, skipped, { inputDir });
+  for (const name of ["latest.md", "handoff.json", "thread-index.json", "current-thread.json"]) {
+    copyMemoryFile(inputMemoryDir, name, path.join(inputDir, name), copied, skipped, { inputDir });
+  }
 
-  const threadIndex = readJson(path.join(memoryDir, "thread-index.json"), []);
+  const threadIndex = readJson(path.join(inputMemoryDir, "thread-index.json"), []);
   const generated = [];
-  const threadDigest = buildThreadDigest(memoryDir, threadIndex, options.maxDigestThreads);
+  const threadDigest = buildThreadDigest(inputMemoryDir, threadIndex, options.maxDigestThreads);
   const digestPath = path.join(inputDir, "thread-digest.json");
   fs.writeFileSync(digestPath, JSON.stringify(threadDigest, null, 2) + "\n", "utf8");
   generated.push({
@@ -129,9 +159,9 @@ function prepareMemoryInputs(repoPath, memoryDir, inputDir, options) {
     for (const entry of [...threadIndex].sort(compareThreadIndex).slice(0, options.maxThreads)) {
       const threadId = entry?.thread_id;
       if (!threadId) continue;
-      const sourcePath = resolveThreadBundlePath(memoryDir, threadId, entry?.bundle_path || null);
+      const sourcePath = resolveThreadBundlePath(inputMemoryDir, threadId, entry?.bundle_path || null);
       const targetPath = path.join(threadsDir, path.basename(sourcePath));
-      const copiedThread = copyMemoryFile(memoryDir, path.relative(memoryDir, sourcePath), targetPath, copied, skipped, {
+      const copiedThread = copyMemoryFile(inputMemoryDir, path.relative(inputMemoryDir, sourcePath), targetPath, copied, skipped, {
         inputDir,
         maxBytes: options.maxThreadBytes,
       });
@@ -149,6 +179,7 @@ function prepareMemoryInputs(repoPath, memoryDir, inputDir, options) {
     created_at: new Date().toISOString(),
     repo_path: repoPath,
     memory_dir: memoryDir,
+    input_memory_dir: inputMemoryDir,
     input_dir: inputDir,
     copied_files: copied,
     generated_files: generated,
@@ -169,6 +200,61 @@ function buildThreadDigest(memoryDir, threadIndex, maxDigestThreads) {
     omitted_thread_count: Math.max(0, entries.length - selected.length),
     threads: selected.map((entry) => summarizeThreadEntry(memoryDir, entry)),
   };
+}
+
+function memoryNeedsRefresh(memoryDir, inputMemoryDir) {
+  if (!hasMemorySourceData(inputMemoryDir)) {
+    return false;
+  }
+  const memoryFile = memoryPath(memoryDir);
+  const stateFile = memoryStatePath(memoryDir);
+  if (!fs.existsSync(memoryFile) || !fs.existsSync(stateFile)) {
+    return true;
+  }
+  const state = readJson(stateFile, {});
+  const priorInputMemoryDir = state?.input_manifest?.input_memory_dir
+    ? path.resolve(String(state.input_manifest.input_memory_dir))
+    : null;
+  if (priorInputMemoryDir !== inputMemoryDir) {
+    return true;
+  }
+  const stateUpdatedAt = Date.parse(String(state.updated_at || ""));
+  if (!Number.isFinite(stateUpdatedAt)) {
+    return true;
+  }
+  const sourceNewestMtimeMs = newestSourceMtime(inputMemoryDir);
+  return sourceNewestMtimeMs > stateUpdatedAt;
+}
+
+function hasMemorySourceData(inputMemoryDir) {
+  const candidates = [
+    path.join(inputMemoryDir, "latest.md"),
+    path.join(inputMemoryDir, "handoff.json"),
+    path.join(inputMemoryDir, "thread-index.json"),
+    path.join(inputMemoryDir, "current-thread.json"),
+    path.join(inputMemoryDir, "threads"),
+  ];
+  return candidates.some((candidate) => fs.existsSync(candidate));
+}
+
+function newestSourceMtime(rootDir) {
+  const stack = [rootDir];
+  let latest = 0;
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current || !fs.existsSync(current)) {
+      continue;
+    }
+    const stat = fs.statSync(current);
+    latest = Math.max(latest, stat.mtimeMs);
+    if (!stat.isDirectory()) {
+      continue;
+    }
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      stack.push(path.join(current, entry.name));
+    }
+  }
+  return latest;
 }
 
 function summarizeThreadEntry(memoryDir, entry) {
@@ -200,6 +286,10 @@ function summarizeThreadEntry(memoryDir, entry) {
 function copyMemoryFile(memoryDir, relPath, targetPath, copied, skipped, { inputDir = null, maxBytes = null } = {}) {
   const sourcePath = path.join(memoryDir, relPath);
   const normalizedRelPath = relPath.split(path.sep).join("/");
+  return copyFileByPath(sourcePath, normalizedRelPath, targetPath, copied, skipped, { inputDir, maxBytes });
+}
+
+function copyFileByPath(sourcePath, normalizedRelPath, targetPath, copied, skipped, { inputDir = null, maxBytes = null } = {}) {
   if (!fs.existsSync(sourcePath)) {
     skipped.push({ path: normalizedRelPath, reason: "missing" });
     return false;
@@ -258,15 +348,25 @@ function buildMemoryPrompt({ goal, inputDir, manifestPath, maxWords }) {
     "- Do not inspect raw session logs.",
     "- Prefer thread-digest.json over copied full thread bundles when writing the memory.",
     "- Do not enumerate historical thread bundles beyond files copied into the input directory.",
+    "- Use previous-memory.md to preserve durable project context when it is still consistent with the latest thread inputs.",
+    "- Prioritize the newest synced thread activity when describing recent work.",
+    "- If previous-memory.md conflicts with the latest synced thread inputs, correct it rather than preserving it.",
     "",
     "Output exactly these Markdown sections:",
-    "1. Current Focus",
-    "2. Durable Decisions",
-    "3. Active Implementation Notes",
-    "4. Open TODOs",
-    "5. Thread Links",
+    "1. Recent Work",
+    "2. Repo Overview",
+    "3. Durable Decisions",
+    "4. Active Notes",
+    "5. Next Steps",
+    "6. Thread Links",
     "",
-    "Thread Links must include thread_id and turn_id when available. If turn_id is unavailable, say unavailable.",
+    "Section expectations:",
+    "- Recent Work: summarize the latest meaningful implementation or debugging activity.",
+    "- Repo Overview: keep a compact durable overview of what this repo does and what the current effort is about.",
+    "- Durable Decisions: include rules or design choices that should survive across sessions.",
+    "- Active Notes: include important current constraints, risks, or caveats.",
+    "- Next Steps: list the most likely immediate follow-up actions.",
+    "- Thread Links must include thread_id and turn_id when available. If turn_id is unavailable, say unavailable.",
   ].join("\n");
 }
 
@@ -366,8 +466,10 @@ module.exports = {
   buildMemoryPrompt,
   buildThreadDigest,
   memoryPath,
+  memoryNeedsRefresh,
   memoryStatePath,
   prepareMemoryInputs,
+  refreshLocalMemory,
   resolveCodexBin,
   summarizeMemoryWithCodex,
 };

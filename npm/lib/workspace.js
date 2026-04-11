@@ -9,6 +9,8 @@ const { DEFAULT_REMOTE_AUTH_PATH, DEFAULT_REMOTE_AUTH_TYPE } = require("./repo-a
 
 const MANAGED_BLOCK_START = "<!-- codex-handoff:start -->";
 const MANAGED_BLOCK_END = "<!-- codex-handoff:end -->";
+const SYNCED_THREADS_DIRNAME = "synced-threads";
+const LOCAL_THREADS_DIRNAME = "local-threads";
 
 function repoStatePath(memoryDir) {
   return path.join(memoryDir, "repo.json");
@@ -50,7 +52,14 @@ function saveSyncState(memoryDir, payload) {
 
 function ensureMemoryLayout(memoryDir) {
   fs.mkdirSync(memoryDir, { recursive: true });
-  fs.mkdirSync(path.join(memoryDir, "threads"), { recursive: true });
+}
+
+function syncedThreadsDir(memoryDir) {
+  return path.join(memoryDir, SYNCED_THREADS_DIRNAME);
+}
+
+function localThreadsDir(memoryDir) {
+  return path.join(memoryDir, LOCAL_THREADS_DIRNAME);
 }
 
 function materializedRootPaths(memoryDir) {
@@ -251,11 +260,11 @@ function renderAgentsBlock(repoState) {
     "",
     "Before doing substantive work in this repository:",
     "0. If the local `codex-handoff` skill is installed, use it for sync, pull, import, and resume orchestration.",
-    "1. Read `.codex-handoff/latest.md` first if it exists.",
-    "2. Read `.codex-handoff/memory.md` if it exists; it is the compact repo-level memory intended for new Codex sessions.",
+    "1. Read `.codex-handoff/memory.md` first if it exists; it is the compact repo-level memory intended for new Codex sessions.",
+    "2. If needed, inspect `.codex-handoff/synced-threads/latest.md` for the latest synced thread summary.",
     "3. If the user asks to continue previous work, run `codex-handoff --repo . resume --goal \"<user-goal>\"`.",
-    "4. If the bootstrap summary is insufficient, inspect `.codex-handoff/handoff.json`.",
-    "5. Never enumerate or bulk-read `.codex-handoff/threads/**` or raw session jsonl files. Only inspect a specific thread bundle when `.codex-handoff/memory.md`, `handoff.json`, or a user request points to that exact thread.",
+    "4. If the bootstrap summary is insufficient, inspect `.codex-handoff/synced-threads/handoff.json`.",
+    "5. Never enumerate or bulk-read `.codex-handoff/synced-threads/threads/**` or raw session jsonl files. Only inspect a specific thread bundle when `.codex-handoff/memory.md`, `.codex-handoff/synced-threads/handoff.json`, or a user request points to that exact thread.",
     MANAGED_BLOCK_END,
   ].join("\n");
 }
@@ -369,6 +378,8 @@ module.exports = {
   ensureMemoryDirGitignored,
   gitOriginUrl,
   inferRepoSlug,
+  localThreadsDir,
+  syncedThreadsDir,
   loadRepoState,
   loadSyncState,
   materializedRootPaths,

@@ -15,12 +15,13 @@ const {
 function makeFixtureMemory() {
   const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-handoff-reader-"));
   const memoryDir = path.join(repoDir, ".codex-handoff");
-  const threadsDir = path.join(memoryDir, "threads");
+  const readDir = path.join(memoryDir, "synced-threads");
+  const threadsDir = path.join(readDir, "threads");
   fs.mkdirSync(threadsDir, { recursive: true });
-  fs.writeFileSync(path.join(memoryDir, "latest.md"), "# Current State\n\n- Last assistant message: reader test\n", "utf8");
+  fs.writeFileSync(path.join(readDir, "latest.md"), "# Current State\n\n- Last assistant message: reader test\n", "utf8");
   fs.writeFileSync(path.join(memoryDir, "memory.md"), "# Repo Memory\n\n- Durable memory note.\n", "utf8");
   fs.writeFileSync(
-    path.join(memoryDir, "handoff.json"),
+    path.join(readDir, "handoff.json"),
     JSON.stringify(
       {
         current_goal: "Validate restore output.",
@@ -61,6 +62,8 @@ function makeFixtureMemory() {
     ].join("\n"),
     "utf8",
   );
+  fs.mkdirSync(memoryDir, { recursive: true });
+  fs.writeFileSync(path.join(memoryDir, "repo.json"), JSON.stringify({ workspace_root: repoDir }, null, 2) + "\n", "utf8");
   return { repoDir, memoryDir };
 }
 

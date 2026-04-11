@@ -23,6 +23,7 @@ const { extractCanonicalMessages, summarizeRollout } = require("./summarize");
 const {
   appendThreadTranscript,
   canonicalThreadBundleRelPath,
+  listThreadBundleFiles,
   loadThreadTranscript,
   readTranscriptFile,
   resolveThreadBundlePath,
@@ -36,9 +37,11 @@ const {
   loadRepoState,
   relocalizeRepoState,
   loadSyncState,
+  localThreadsDir,
   materializedRootPaths,
   saveRepoState,
   saveSyncState,
+  syncedThreadsDir,
   syncStatePath,
   threadIndexPath,
 } = require("./workspace");
@@ -78,6 +81,30 @@ async function exportRepoThreads(repoPath, memoryDir, { codexHome, includeRawThr
     clearMaterializedRoot(memoryDir);
   }
   return exportedThreads;
+}
+
+function seedLocalWriteState(memoryDir, { includePreviousMemory = false } = {}) {
+  const stageDir = localThreadsDir(memoryDir);
+  ensureMemoryLayout(stageDir);
+  return stageDir;
+}
+
+function prepareLocalWriteSnapshot(repoPath, memoryDir, { codexHome, includeRawThreads = false, includePreviousMemory = false, discoverThreads = discoverThreadsForRepo } = {}) {
+  const stageDir = seedLocalWriteState(memoryDir, { includePreviousMemory });
+  const reconcileResult = reconcileRepoThreads(repoPath, stageDir, {
+    codexHome,
+    includeRawThreads,
+    discoverThreads,
+  });
+  return {
+    stageDir,
+    reconcile_result: reconcileResult,
+    local_result: buildLocalResultFromMemoryDir(stageDir),
+  };
+}
+
+function resolveReadDataDir(memoryDir) {
+  return syncedThreadsDir(memoryDir);
 }
 
 function buildThreadIndexEntry(thread, previousEntry = null, { preserveSourceRelpath = false, bundleRelPath = null } = {}) {
@@ -270,15 +297,21 @@ async function pushMemoryTree(profile, memoryDir, prefix, { relPaths = null, pru
   const uploaded = [];
   const desired = new Map();
   const deleted = [];
+  const repoState = loadRepoState(memoryDir);
+  const machineId = repoState.machine_id || null;
   const normalizedPrefix = prefix.replace(/\/+$/, "");
   const sourceRoot = path.resolve(sourceDir || memoryDir);
+  const sourceIsPushSource = path.resolve(sourceRoot) === path.resolve(localThreadsDir(memoryDir));
   const selectedRelPaths = relPaths
     ? [...new Set(relPaths.map((item) => String(item).split(path.sep).join("/")))]
     : iterMemoryFiles(sourceRoot).map((filePath) => path.relative(sourceRoot, filePath).split(path.sep).join("/"));
 
   for (const relPath of selectedRelPaths) {
-    const key = `${normalizedPrefix}/${relPath}`;
-    const localPath = path.join(sourceRoot, relPath.split("/").join(path.sep));
+    const key = remoteKeyForRelPath(normalizedPrefix, relPath, machineId, { sourceIsPushSource });
+    if (!key) {
+      continue;
+    }
+    const localPath = localPathForSyncRelpath(memoryDir, sourceRoot, relPath);
     if (fs.existsSync(localPath)) {
       desired.set(key, fs.readFileSync(localPath));
     } else if (relPaths) {
@@ -295,7 +328,7 @@ async function pushMemoryTree(profile, memoryDir, prefix, { relPaths = null, pru
   if (prune) {
     const remoteKeys = new Set((await listR2Objects(profile, normalizedPrefix + "/")).map((item) => item.key));
     for (const key of remoteKeys) {
-      if (!desired.has(key)) {
+      if (shouldPruneRemoteKey(key, normalizedPrefix, machineId, { sourceIsPushSource }) && !desired.has(key)) {
         await deleteR2Object(profile, key);
       }
     }
@@ -317,7 +350,10 @@ async function pullMemoryTree(profile, memoryDir, prefix) {
   const normalizedPrefix = prefix.replace(/\/+$/, "") + "/";
   for (const item of await listR2Objects(profile, normalizedPrefix)) {
     const key = item.key;
-    const relPath = key.slice(normalizedPrefix.length);
+    const relPath = localRelPathForRemoteKey(key, normalizedPrefix);
+    if (!relPath) {
+      continue;
+    }
     const localPath = path.join(memoryDir, relPath);
     const payload = await getR2Object(profile, key);
     if (writeBufferIfChanged(localPath, payload)) {
@@ -328,6 +364,59 @@ async function pullMemoryTree(profile, memoryDir, prefix) {
   pruneRemovedLocalFiles(memoryDir, remotePaths);
   cleanupLegacyThreadArtifacts(memoryDir);
   return downloaded;
+}
+
+function remoteKeyForRelPath(normalizedPrefix, relPath, machineId, { sourceIsPushSource = false } = {}) {
+  const normalizedRelPath = String(relPath).split(path.sep).join("/");
+  if (machineId && isThreadPayloadRelPath(normalizedRelPath)) {
+    return `${normalizedPrefix}/machine-sources/${machineId}/${normalizedRelPath}`;
+  }
+  if (isSharedRootRelPath(normalizedRelPath)) {
+    return `${normalizedPrefix}/${normalizedRelPath}`;
+  }
+  if (sourceIsPushSource) {
+    return null;
+  }
+  return `${normalizedPrefix}/${normalizedRelPath}`;
+}
+
+function localRelPathForRemoteKey(key, normalizedPrefix) {
+  const relPath = key.slice(normalizedPrefix.length);
+  if (!relPath.startsWith("machine-sources/")) {
+    return null;
+  }
+  const parts = relPath.split("/");
+  if (parts.length < 4) {
+    return null;
+  }
+  const localRelPath = parts.slice(2).join("/");
+  return isThreadPayloadRelPath(localRelPath) ? localRelPath : null;
+}
+
+function shouldPruneRemoteKey(key, normalizedPrefix, machineId, { sourceIsPushSource = false } = {}) {
+  const relPath = key.slice(normalizedPrefix.length + 1);
+  if (!relPath.startsWith("machine-sources/")) {
+    return sourceIsPushSource ? isSharedRootRelPath(relPath) : true;
+  }
+  if (!machineId) {
+    return false;
+  }
+  return relPath.startsWith(`machine-sources/${machineId}/`);
+}
+
+function isThreadPayloadRelPath(relPath) {
+  const parts = String(relPath || "").split("/");
+  if (parts.length !== 2 || parts[0] !== "threads") {
+    return false;
+  }
+  return (
+    parts[1].endsWith(".jsonl") ||
+    parts[1].endsWith(".rollout.jsonl.gz")
+  );
+}
+
+function isSharedRootRelPath(relPath) {
+  return false;
 }
 
 function reconcileRepoThreads(repoPath, memoryDir, { codexHome, includeRawThreads = false, discoverThreads = discoverThreadsForRepo } = {}) {
@@ -378,18 +467,20 @@ function reconcileRepoThreads(repoPath, memoryDir, { codexHome, includeRawThread
 }
 
 async function pullRepoMemorySnapshot(repoPath, memoryDir, profile, repoState, { codexHome, thread = null } = {}) {
-  const downloaded = await pullMemoryTree(profile, memoryDir, repoState.remote_prefix);
-  const pulledRepoState = loadRepoState(memoryDir);
+  const targetDir = syncedThreadsDir(memoryDir);
+  const downloaded = await pullMemoryTree(profile, targetDir, repoState.remote_prefix);
+  const pulledRepoState = loadRepoState(targetDir);
   const localizedRepoState = relocalizeRepoState(repoPath, pulledRepoState, repoState);
   saveRepoState(memoryDir, localizedRepoState);
+  rebuildReadContextMetadata(targetDir);
   let threadId = thread;
-  if (!threadId && fs.existsSync(currentThreadPath(memoryDir))) {
-    threadId = JSON.parse(fs.readFileSync(currentThreadPath(memoryDir), "utf8")).thread_id || null;
+  if (!threadId && fs.existsSync(currentThreadPath(targetDir))) {
+    threadId = JSON.parse(fs.readFileSync(currentThreadPath(targetDir), "utf8")).thread_id || null;
   }
   let imported = null;
-  const bundlePath = threadId ? resolveThreadBundlePath(memoryDir, threadId) : null;
+  const bundlePath = threadId ? resolveThreadBundlePath(targetDir, threadId) : null;
   if (threadId && bundlePath && fs.existsSync(bundlePath)) {
-    imported = importThreadBundleToCodex(repoPath, memoryDir, threadId, { codexHome });
+    imported = importThreadBundleToCodex(repoPath, targetDir, threadId, { codexHome });
   }
   const syncState = recordSyncEvent(memoryDir, {
     repoPath,
@@ -412,6 +503,41 @@ async function pullRepoMemorySnapshot(repoPath, memoryDir, profile, repoState, {
     sync_state: syncState,
     sync_health: buildSyncHealth(memoryDir, syncState),
   };
+}
+
+function rebuildReadContextMetadata(memoryDir) {
+  const entries = listThreadBundleFiles(memoryDir).map((filePath) => {
+    const transcript = readTranscriptFile(filePath);
+    const rows = Array.isArray(transcript) ? transcript : [];
+    const lastRecord = rows[rows.length - 1] || null;
+    const stat = fs.statSync(filePath);
+    const threadId = path.basename(filePath).replace(/(\.rollout)?\.jsonl$/u, "");
+    const updatedAt = parseRecordTimestamp(lastRecord?.timestamp) || Math.floor(stat.mtimeMs / 1000);
+    return {
+      thread_id: threadId,
+      title: threadId,
+      thread_name: threadId,
+      created_at: Math.floor((stat.birthtimeMs || stat.mtimeMs) / 1000),
+      updated_at: updatedAt,
+      source_session_relpath: null,
+      bundle_path: path.relative(memoryDir, filePath).split(path.sep).join("/"),
+    };
+  }).sort((a, b) => Number(b.updated_at || 0) - Number(a.updated_at || 0));
+
+  writeJsonFileIfChanged(threadIndexPath(memoryDir), entries);
+  if (entries.length > 0) {
+    writeCurrentThread(memoryDir, entries[0].thread_id);
+  } else {
+    const currentPath = currentThreadPath(memoryDir);
+    if (fs.existsSync(currentPath)) {
+      fs.rmSync(currentPath, { force: true });
+    }
+  }
+}
+
+function parseRecordTimestamp(value) {
+  const parsed = Date.parse(String(value || ""));
+  return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : null;
 }
 
 function pruneRemovedLocalFiles(memoryDir, remotePaths) {
@@ -523,16 +649,18 @@ function importThreadBundleToCodex(repoPath, memoryDir, threadId, { codexHome } 
   };
 }
 
-async function syncNow(repoPath, memoryDir, profile, { codexHome, includeRawThreads = false, prefix, relPaths = null } = {}) {
-  ensureMemoryLayout(memoryDir);
-  cleanupLegacyThreadArtifacts(memoryDir);
-  cleanupRootHistoryArtifacts(memoryDir);
-  const indexPayload = loadThreadIndex(memoryDir);
-  const currentThread = currentThreadId(memoryDir) || null;
+async function syncNow(repoPath, memoryDir, profile, { codexHome, includeRawThreads = false, prefix, relPaths = null, sourceDir = memoryDir } = {}) {
+  const sourceRoot = path.resolve(sourceDir || memoryDir);
+  ensureMemoryLayout(sourceRoot);
+  cleanupLegacyThreadArtifacts(sourceRoot);
+  cleanupRootHistoryArtifacts(sourceRoot);
+  const indexPayload = loadThreadIndex(sourceRoot);
+  const currentThread = currentThreadId(sourceRoot) || null;
   const threadIds = indexPayload.map((item) => item.thread_id).filter(Boolean);
   const uploaded = await pushMemoryTree(profile, memoryDir, prefix, {
     relPaths,
     prune: !Array.isArray(relPaths),
+    sourceDir: sourceRoot,
   });
   const syncState = recordSyncEvent(memoryDir, {
     repoPath,
@@ -568,7 +696,8 @@ async function syncNow(repoPath, memoryDir, profile, { codexHome, includeRawThre
 }
 
 async function syncChangedThreads(repoPath, memoryDir, profile, { codexHome, includeRawThreads = false, prefix, changes = [], discoverThreads = discoverThreadsForRepo } = {}) {
-  const threadUpdate = applyChangedThreadsLocally(repoPath, memoryDir, {
+  const sourceDir = localThreadsDir(memoryDir);
+  const threadUpdate = applyChangedThreadsLocally(repoPath, sourceDir, {
     codexHome,
     includeRawThreads,
     changes,
@@ -577,6 +706,7 @@ async function syncChangedThreads(repoPath, memoryDir, profile, { codexHome, inc
   return pushChangedThreads(repoPath, memoryDir, profile, {
     prefix,
     localResult: threadUpdate,
+    sourceDir,
   });
 }
 
@@ -821,8 +951,9 @@ function currentThreadId(memoryDir) {
 }
 
 function materializedRootStatus(memoryDir) {
-  const currentPath = currentThreadPath(memoryDir);
-  const indexPath = threadIndexPath(memoryDir);
+  const readDir = resolveReadDataDir(memoryDir);
+  const currentPath = currentThreadPath(readDir);
+  const indexPath = threadIndexPath(readDir);
   return {
     current_thread_present: fs.existsSync(currentPath),
     thread_index_present: fs.existsSync(indexPath),
@@ -832,8 +963,9 @@ function materializedRootStatus(memoryDir) {
 
 function buildSyncHealth(memoryDir, syncState = null) {
   const state = syncState || loadSyncState(memoryDir);
-  const threadIds = indexedThreadIds(memoryDir);
-  const currentThread = currentThreadId(memoryDir);
+  const readDir = resolveReadDataDir(memoryDir);
+  const threadIds = indexedThreadIds(readDir);
+  const currentThread = currentThreadId(readDir);
   const rootStatus = materializedRootStatus(memoryDir);
   let status = "never_synced";
   if (state.last_sync_at) {
@@ -858,8 +990,9 @@ function recordSyncEvent(memoryDir, { repoPath, prefix, direction, command, thre
   const existing = loadSyncState(memoryDir);
   const repoState = loadRepoState(memoryDir);
   const now = new Date().toISOString();
-  const normalizedThreadIds = threadIds ? [...threadIds].sort() : indexedThreadIds(memoryDir);
-  const resolvedCurrentThread = currentThread !== null ? currentThread : currentThreadId(memoryDir);
+  const readDir = resolveReadDataDir(memoryDir);
+  const normalizedThreadIds = threadIds ? [...threadIds].sort() : indexedThreadIds(readDir);
+  const resolvedCurrentThread = currentThread !== null ? currentThread : currentThreadId(readDir);
   const rootStatus = materializedRootStatus(memoryDir);
   const event = {
     at: now,
@@ -899,15 +1032,12 @@ function recordSyncEvent(memoryDir, { repoPath, prefix, direction, command, thre
 function shouldSyncRelpath(relPath, threadIds, currentThreadIdValue) {
   if (relPath === "repo.json") return true;
   if (relPath === "thread-index.json") return true;
-  if (relPath === "memory.md") return true;
-  if (relPath === "memory-state.json") return true;
   if (relPath === "sync-state.json") return true;
   if (relPath === "current-thread.json") return currentThreadIdValue && threadIds.includes(currentThreadIdValue);
   const parts = relPath.split("/");
   if (parts.length === 2 && parts[0] === "threads") {
     return threadIds.some((threadId) =>
       parts[1] === `${threadId}.jsonl` ||
-      parts[1] === `${threadId}.json` ||
       parts[1] === `${threadId}.rollout.jsonl.gz`);
   }
   return false;
@@ -966,7 +1096,11 @@ function dedupeNewThreads(threads) {
 }
 
 function shouldPreserveLocalRelpath(relPath) {
-  return relPath === "sync-state.json" || relPath.startsWith("conflicts/") || relPath.startsWith(".local-write/");
+  return relPath === "sync-state.json" || relPath.startsWith("conflicts/") || relPath.startsWith("local-threads/");
+}
+
+function localPathForSyncRelpath(memoryDir, sourceRoot, relPath) {
+  return path.join(sourceRoot, relPath.split("/").join(path.sep));
 }
 
 function relativeSessionPath(filePath) {
@@ -980,11 +1114,6 @@ function cleanupLegacyThreadArtifacts(memoryDir) {
   if (!fs.existsSync(threadsDir)) {
     return;
   }
-  const canonicalThreadIds = new Set(
-    fs.readdirSync(threadsDir, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl") && !entry.name.endsWith(".rollout.jsonl.gz"))
-      .map((entry) => entry.name.slice(0, -".jsonl".length)),
-  );
   for (const entry of fs.readdirSync(threadsDir, { withFileTypes: true })) {
     const fullPath = path.join(threadsDir, entry.name);
     if (entry.isDirectory()) {
@@ -997,17 +1126,7 @@ function cleanupLegacyThreadArtifacts(memoryDir) {
     if (entry.name.endsWith(".jsonl") || entry.name.endsWith(".rollout.jsonl.gz")) {
       continue;
     }
-    if (entry.name.endsWith(".json")) {
-      const threadId = entry.name.slice(0, -".json".length);
-      if (!canonicalThreadIds.has(threadId)) {
-        continue;
-      }
-    }
     fs.rmSync(fullPath, { force: true });
-  }
-  const legacyRawDir = path.join(memoryDir, "raw");
-  if (fs.existsSync(legacyRawDir)) {
-    fs.rmSync(legacyRawDir, { recursive: true, force: true });
   }
 }
 
@@ -1017,10 +1136,6 @@ function cleanupRootHistoryArtifacts(memoryDir) {
     if (fs.existsSync(filePath)) {
       fs.rmSync(filePath, { force: true });
     }
-  }
-  const legacyRawDir = path.join(memoryDir, "raw");
-  if (fs.existsSync(legacyRawDir)) {
-    fs.rmSync(legacyRawDir, { recursive: true, force: true });
   }
 }
 
@@ -1045,6 +1160,7 @@ module.exports = {
   describeSyncState,
   exportRepoThreads,
   importThreadBundleToCodex,
+  prepareLocalWriteSnapshot,
   pullRepoMemorySnapshot,
   pullMemoryTree,
   pushChangedThreads,

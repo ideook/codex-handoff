@@ -16,7 +16,7 @@ can resume on another machine with the right context already in place.
 - repo-scoped instead of one giant session pool
 - built for one-person, cross-machine handoff
 - background sync while Codex is open
-- thread bundles preserved separately under `.codex-handoff/threads/`
+- thread payloads preserved separately under `.codex-handoff/synced-threads/` and `.codex-handoff/local-threads/`
 - Cloudflare R2 support out of the box
 
 ## Start With Codex
@@ -65,39 +65,37 @@ Remove codex-handoff from this repository.
 
 `codex-handoff` keeps four main kinds of state:
 
-- `.codex-handoff/latest.md`
-  short bootstrap summary
 - `.codex-handoff/memory.md`
-  compact repo-level memory for new Codex sessions
-- `.codex-handoff/handoff.json`
-  structured restore state
-- `.codex-handoff/threads/*.json`
-  detailed thread bundles used only when deeper evidence is needed
+  compact repo-level memory kept only at the repo root for new Codex sessions
+- `.codex-handoff/synced-threads/`
+  pulled thread payloads used for default restore reads
+- `.codex-handoff/local-threads/`
+  local thread payloads prepared for push
+- `.codex-handoff/repo.json`
+  repo-local control-plane state
 
 Background sync is driven by a global watcher:
 
 - it watches `~/.codex/sessions/**`
 - routes rollout changes to the matching repo using `session_meta.payload.cwd`
-- updates repo thread bundles locally
-- pushes the repo-scoped handoff tree to the configured remote prefix
+- writes producer-side thread updates into `.codex-handoff/local-threads/`
+- pushes local thread payloads to the configured remote prefix
+- keeps running while the Codex app process is alive, including background window-hidden states
+- keeps pulled remote thread state under `.codex-handoff/synced-threads/` as the default thread read cache
 
 Repo-level memory flow:
 
 - Producer PC watches Codex rollout changes and extracts deterministic thread
-  bundles under `.codex-handoff/threads/` without using AI.
-- When Codex no longer has an active window, Producer PC performs one final
-  deterministic thread export, then runs AI-assisted memory summarization in an
-  isolated temporary working directory using selected handoff inputs. The
-  summarizer receives a compact deterministic `thread-digest.json` by default,
-  not the full thread bundle set.
-- After validation, the summarizer atomically replaces
-  `.codex-handoff/memory.md`; temporary files are not the synchronized output.
-- Sync pushes `.codex-handoff/memory.md` and related handoff state to the remote.
-- Consumer PC pulls that memory into its local `.codex-handoff/` directory.
-- New Codex sessions should read `.codex-handoff/latest.md` and
-  `.codex-handoff/memory.md` first, and should not scan
-  `.codex-handoff/threads/**` unless a memory source link points to a specific
+  bundles into `.codex-handoff/local-threads/threads/` without using AI.
+- Producer PC does not summarize repo memory during conversation or shutdown.
+- Producer shutdown does not rewrite `.codex-handoff/local-threads/`.
+- Explicit pull flows regenerate root `.codex-handoff/memory.md` locally from
+  `.codex-handoff/synced-threads/`.
+- New Codex sessions should read `.codex-handoff/memory.md` first, and should not scan
+  `.codex-handoff/synced-threads/threads/**` unless a memory source link points to a specific
   thread or the user asks for deeper evidence.
+- Producer-side staged thread payloads are not part of the default bootstrap
+  read path.
 
 ## Primary Commands
 

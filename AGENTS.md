@@ -22,14 +22,15 @@ When working here, optimize for:
 
 Before doing substantive work in this repository:
 
-1. Read `.codex-handoff/latest.md` first if it exists.
-2. Read `.codex-handoff/memory.md` if it exists; it is the compact repo-level
+1. Read `.codex-handoff/memory.md` if it exists; it is the compact repo-level
    memory intended for new Codex sessions.
+2. If needed, inspect `.codex-handoff/synced-threads/latest.md` for the latest
+   synced thread summary.
 3. If the user asks to continue previous work, run:
    `codex-handoff --repo . resume --goal "<user-goal>"`
 4. If the bootstrap summary is insufficient, inspect:
-   `.codex-handoff/handoff.json`
-5. Never enumerate or bulk-read `.codex-handoff/threads/**` or raw session
+   `.codex-handoff/synced-threads/handoff.json`
+5. Never enumerate or bulk-read `.codex-handoff/synced-threads/threads/**` or raw session
    jsonl files. Use targeted commands instead:
    `codex-handoff --repo . search`
    `codex-handoff --repo . extract`
@@ -64,21 +65,21 @@ Before doing substantive work in this repository:
 
 This repository is attached to codex-handoff sync.
 - local project name: `codex-handoff`
-- local workspace root: `D:\source\repos\ideook\codex-handoff`
+- local workspace root: `/Users/dukhyunlee/development/repos/ideook/codex-handoff`
 - remote auth: `global_dotenv`
 - remote auth file: `~/.codex-handoff/.env.local`
 - remote repo slug: `brdgkr-codex-handoff`
 - remote prefix: `repos/brdgkr-codex-handoff/`
 - summary mode: `auto`
 - include raw threads: `false`
-- match status: `existing_local`
-- installed skill path: `C:\Users\DukhyunLee\.codex\skills\codex-handoff`
+- match status: `create_new`
+- installed skill path: `/Users/dukhyunlee/.codex/skills/codex-handoff`
 
 Before doing substantive work in this repository:
 0. If the local `codex-handoff` skill is installed, use it for sync, pull, import, and resume orchestration.
-1. Read `.codex-handoff/latest.md` first if it exists.
-2. Read `.codex-handoff/memory.md` if it exists; it is the compact repo-level memory intended for new Codex sessions.
+1. Read `.codex-handoff/memory.md` first if it exists; it is the compact repo-level memory intended for new Codex sessions.
+2. If needed, inspect `.codex-handoff/synced-threads/latest.md` for the latest synced thread summary.
 3. If the user asks to continue previous work, run `codex-handoff --repo . resume --goal "<user-goal>"`.
-4. If the bootstrap summary is insufficient, inspect `.codex-handoff/handoff.json`.
-5. Never enumerate or bulk-read `.codex-handoff/threads/**` or raw session jsonl files. Only inspect a specific thread bundle when `.codex-handoff/memory.md`, `handoff.json`, or a user request points to that exact thread.
+4. If the bootstrap summary is insufficient, inspect `.codex-handoff/synced-threads/handoff.json`.
+5. Never enumerate or bulk-read `.codex-handoff/synced-threads/threads/**` or raw session jsonl files. Only inspect a specific thread bundle when `.codex-handoff/memory.md`, `.codex-handoff/synced-threads/handoff.json`, or a user request points to that exact thread.
 <!-- codex-handoff:end -->

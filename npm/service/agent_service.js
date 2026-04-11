@@ -6,14 +6,13 @@ const process = require("node:process");
 
 const { serviceState, clearServiceState } = require("../lib/agent-runtime");
 const { detectCodexProcesses, findScriptProcessPids } = require("../lib/process-utils");
-const { summarizeMemoryWithCodex } = require("../lib/memory");
 const { loadRepoR2Profile } = require("../lib/repo-auth");
-const { buildLocalResultFromMemoryDir, pullRepoMemorySnapshot, pushChangedThreads, syncNow } = require("../lib/sync");
+const { buildLocalResultFromMemoryDir, pullRepoMemorySnapshot, pushChangedThreads } = require("../lib/sync");
 const { watchServiceState, isWatchServiceRunning, startWatchService, stopWatchService } = require("../lib/watch-runtime");
-const { loadRepoState } = require("../lib/workspace");
+const { loadRepoState, localThreadsDir } = require("../lib/workspace");
 const { AgentController } = require("./agent_controller");
 const { agentServiceStatePath, packageVersionFromHere, resolveCodexHome, resolveConfigDir, watchServiceStatePath } = require("./common");
-const { loadManagedRepos } = require("./repo_registry");
+const { ensureManagedRepoState, loadManagedRepos } = require("./repo_registry");
 
 const DEFAULT_POLL_INTERVAL_MS = 2000;
 const PACKAGE_VERSION = packageVersionFromHere(__filename);
@@ -240,7 +239,7 @@ async function runStartupSync(configDir, codexHome, logger) {
 
   for (const repo of managedRepos) {
     const memoryDir = path.join(repo.repoPath, ".codex-handoff");
-    const repoState = loadRepoState(memoryDir);
+    const repoState = ensureManagedRepoState(memoryDir, repo);
     if (!repoState?.repo_slug || !repoState?.remote_prefix) {
       skippedRepoCount += 1;
       recordManagedRepoEvent(configDir, "startup_sync_repo", {
@@ -253,12 +252,25 @@ async function runStartupSync(configDir, codexHome, logger) {
     }
     try {
       const profile = loadRepoR2Profile(memoryDir);
+      const recoveryDir = localThreadsDir(memoryDir);
+      const recoveryLocalResult = buildLocalResultFromMemoryDir(recoveryDir);
+      let recoveryResult = null;
+      if (recoveryLocalResult.changed_paths.length > 0) {
+        recoveryResult = await pushChangedThreads(repo.repoPath, memoryDir, profile, {
+          prefix: repoState.remote_prefix,
+          localResult: recoveryLocalResult,
+          sourceDir: recoveryDir,
+          mirrorOnSuccess: false,
+          command: "startup-recovery",
+        });
+      }
       const result = await pullRepoMemorySnapshot(repo.repoPath, memoryDir, profile, repoState, { codexHome });
       const entry = {
         repo: repo.repoPath,
         repo_slug: repo.repoSlug,
         status: "pulled",
         downloaded_objects: result.downloaded_objects || 0,
+        recovery_uploaded_objects: recoveryResult?.objects_uploaded || 0,
         current_thread: result.current_thread || null,
         imported_thread: result.imported_thread?.thread_id || null,
       };
@@ -295,106 +307,27 @@ async function runStartupSync(configDir, codexHome, logger) {
 }
 
 async function runShutdownSync(configDir, codexHome, logger) {
-  const managedRepos = loadManagedRepos(configDir).filter((repo) => fs.existsSync(repo.repoPath));
-  const startedAt = new Date().toISOString();
   logger.write(`shutdown sync invoked for codex_home=${codexHome}`);
   recordManagedRepoEvent(configDir, "shutdown_sync_started", {
-    started_at: startedAt,
+    started_at: new Date().toISOString(),
     codex_home: codexHome,
-    managed_repo_count: managedRepos.length,
+    managed_repo_count: loadManagedRepos(configDir).filter((repo) => fs.existsSync(repo.repoPath)).length,
   });
-  const syncedRepos = [];
-  const errors = [];
-  let skippedRepoCount = 0;
-
-  for (const repo of managedRepos) {
-    const memoryDir = path.join(repo.repoPath, ".codex-handoff");
-    const repoState = loadRepoState(memoryDir);
-    if (!repoState?.repo_slug || !repoState?.remote_prefix) {
-      skippedRepoCount += 1;
-      recordManagedRepoEvent(configDir, "shutdown_sync_repo", {
-        repo: repo.repoPath,
-        repo_slug: repo.repoSlug,
-        status: "skipped",
-        reason: "missing_repo_state",
-      }, [repo.repoPath]);
-      continue;
-    }
-    try {
-      const profile = loadRepoR2Profile(memoryDir);
-      const localWriteDir = path.join(memoryDir, ".local-write");
-      let stagePushResult = {
-        thread_count: 0,
-        threads_exported: 0,
-        changed_paths: [],
-      };
-      if (fs.existsSync(localWriteDir)) {
-        const localWriteState = buildLocalResultFromMemoryDir(localWriteDir);
-        if (localWriteState.changed_paths.length > 0) {
-          stagePushResult = await pushChangedThreads(repo.repoPath, memoryDir, profile, {
-            prefix: repoState.remote_prefix,
-            localResult: localWriteState,
-            sourceDir: localWriteDir,
-            mirrorOnSuccess: true,
-            command: "shutdown-stage",
-          });
-        }
-      }
-      const memoryResult = summarizeMemoryWithCodex(repo.repoPath, memoryDir, {
-        goal: "Update compact repo-level memory after the Codex window closed.",
-        maxThreads: 0,
-        maxWords: 900,
-        reasoningEffort: "low",
-        timeoutMs: 180000,
-      });
-      const pushResult = await syncNow(repo.repoPath, memoryDir, profile, {
-        codexHome,
-        includeRawThreads: repoState.include_raw_threads === true,
-        prefix: repoState.remote_prefix,
-        relPaths: [
-          "memory.md",
-          "memory-state.json",
-        ],
-      });
-      const entry = {
-        repo: repo.repoPath,
-        repo_slug: repo.repoSlug,
-        status: "pushed",
-        staged_thread_count: stagePushResult.thread_count || 0,
-        staged_threads_pushed: stagePushResult.threads_exported || 0,
-        thread_count: pushResult.thread_count || 0,
-        memory_written: memoryResult.wrote_memory === true,
-        objects_uploaded: (stagePushResult.objects_uploaded || 0) + (pushResult.objects_uploaded || 0),
-        current_thread: pushResult.current_thread || null,
-      };
-      syncedRepos.push(entry);
-      recordManagedRepoEvent(configDir, "shutdown_sync_repo", entry, [repo.repoPath]);
-    } catch (error) {
-      logger.write(`shutdown sync error ${repo.repoPath}: ${error.message}`);
-      const entry = {
-        repo: repo.repoPath,
-        repo_slug: repo.repoSlug,
-        status: "error",
-        error: error.message,
-      };
-      errors.push(entry);
-      recordManagedRepoEvent(configDir, "shutdown_sync_repo", entry, [repo.repoPath]);
-    }
-  }
-
   const completedAt = new Date().toISOString();
   recordManagedRepoEvent(configDir, "shutdown_sync_completed", {
     completed_at: completedAt,
-    managed_repo_count: managedRepos.length,
-    synced_repo_count: syncedRepos.length,
-    skipped_repo_count: skippedRepoCount,
-    error_count: errors.length,
+    managed_repo_count: loadManagedRepos(configDir).filter((repo) => fs.existsSync(repo.repoPath)).length,
+    synced_repo_count: 0,
+    skipped_repo_count: 0,
+    error_count: 0,
+    mode: "noop",
   });
   return {
-    synced_repo_count: syncedRepos.length,
-    skipped_repo_count: skippedRepoCount,
-    synced_repos: syncedRepos,
-    errors,
+    synced_repo_count: 0,
+    skipped_repo_count: 0,
+    synced_repos: [],
+    errors: [],
+    mode: "noop",
     completed_at: completedAt,
   };
 }

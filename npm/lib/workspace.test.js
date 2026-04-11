@@ -119,7 +119,7 @@ test("ensureAgentsBlock points consumers to root memory and away from thread sca
   const content = fs.readFileSync(agentsPath, "utf8");
 
   assert.match(content, /Read `.codex-handoff\/memory\.md`/);
-  assert.match(content, /Never enumerate or bulk-read `.codex-handoff\/threads\/\*\*`/);
+  assert.match(content, /Never enumerate or bulk-read `.codex-handoff\/synced-threads\/threads\/\*\*`/);
 });
 
 test("removeMemoryDirGitignoreEntry removes the codex-handoff entry", () => {

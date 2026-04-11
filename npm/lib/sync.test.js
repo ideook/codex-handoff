@@ -7,7 +7,7 @@ const { execFileSync } = require("node:child_process");
 
 const { dbCwd, dbRolloutPath, discoverThreadsForRepo, upsertThreadRow } = require("./local-codex");
 const { readTranscriptFile } = require("./thread-bundles");
-const { applyChangedThreadsLocally, buildLocalResultFromMemoryDir, exportRepoThreads, pullRepoMemorySnapshot, pushChangedThreads, reconcileRepoThreads, syncChangedThreads, updateThreadBundleFromRolloutChange, _test } = require("./sync");
+const { applyChangedThreadsLocally, buildLocalResultFromMemoryDir, exportRepoThreads, prepareLocalWriteSnapshot, pullRepoMemorySnapshot, pushChangedThreads, reconcileRepoThreads, syncChangedThreads, syncNow, updateThreadBundleFromRolloutChange, _test } = require("./sync");
 
 function makeThread(overrides = {}) {
   return {
@@ -122,16 +122,14 @@ test("exportRepoThreads preserves imported bundles when raw rollout files are un
     JSON.stringify({ type: "event_msg", payload: { type: "user_message", message: "live user" } }),
     "",
   ].join("\n"), "utf8");
-  fs.writeFileSync(path.join(memoryDir, "threads", "thread-imported.json"), JSON.stringify([
-    {
-      session_id: "thread-imported",
-      turn_id: "turn-1",
-      timestamp: null,
-      role: "user",
-      phase: null,
-      message: "imported user",
-    },
-  ], null, 2) + "\n", "utf8");
+  fs.writeFileSync(path.join(memoryDir, "threads", "thread-imported.jsonl"), `${JSON.stringify({
+    session_id: "thread-imported",
+    turn_id: "turn-1",
+    timestamp: null,
+    role: "user",
+    phase: null,
+    message: "imported user",
+  })}\n`, "utf8");
   fs.writeFileSync(path.join(memoryDir, "thread-index.json"), JSON.stringify([
     {
       thread_id: "thread-imported",
@@ -140,7 +138,7 @@ test("exportRepoThreads preserves imported bundles when raw rollout files are un
       created_at: 1,
       updated_at: 4,
       source_session_relpath: "sessions/original-imported.jsonl",
-      bundle_path: "threads/thread-imported.json",
+      bundle_path: "threads/thread-imported.jsonl",
     },
   ], null, 2) + "\n", "utf8");
 
@@ -156,7 +154,7 @@ test("exportRepoThreads preserves imported bundles when raw rollout files are un
   const index = JSON.parse(fs.readFileSync(path.join(memoryDir, "thread-index.json"), "utf8"));
   assert.deepEqual(index.map((entry) => entry.thread_id), ["thread-imported", "thread-live"]);
   assert.equal(index[0].source_session_relpath, "sessions/original-imported.jsonl");
-  const importedTranscript = readTranscriptFile(path.join(memoryDir, "threads", "thread-imported.json"));
+  const importedTranscript = readTranscriptFile(path.join(memoryDir, "threads", "thread-imported.jsonl"));
   assert.equal(importedTranscript[0].message, "imported user");
 });
 
@@ -388,6 +386,67 @@ test("reconcileRepoThreads refreshes only stale thread bundles", () => {
   assert.equal(fs.existsSync(path.join(memoryDir, "threads", "thread-fresh.jsonl")), true);
 });
 
+test("prepareLocalWriteSnapshot stages local thread exports without mutating the read cache", () => {
+  const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-handoff-local-stage-"));
+  const memoryDir = path.join(repoDir, ".codex-handoff");
+  const rolloutPath = path.join(repoDir, "rollout-thread-stage.jsonl");
+  fs.mkdirSync(memoryDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(memoryDir, "repo.json"),
+    JSON.stringify({
+      repo_path: repoDir,
+      repo_slug: "project",
+      remote_auth_type: "test",
+      remote_auth_path: "test",
+      remote_prefix: "repos/project/",
+    }, null, 2) + "\n",
+    "utf8",
+  );
+  fs.writeFileSync(path.join(memoryDir, "memory.md"), "# Root Memory\n\n- Keep this at root.\n", "utf8");
+  fs.writeFileSync(rolloutPath, `${JSON.stringify({
+    session_id: "thread-stage",
+    turn_id: "turn-1",
+    timestamp: null,
+    role: "user",
+    phase: null,
+    message: "local staged thread",
+  })}\n`, "utf8");
+
+  const thread = makeThread({
+    threadId: "thread-stage",
+    title: "Stage Thread",
+    rolloutPath,
+    updatedAt: 3,
+    row: {
+      id: "thread-stage",
+      source: "vscode",
+      model_provider: "openai",
+      model: "gpt-5.4",
+      reasoning_effort: "xhigh",
+      cwd: repoDir,
+      rollout_path: rolloutPath,
+    },
+    sessionIndexEntry: {
+      id: "thread-stage",
+      thread_name: "Stage Thread",
+      updated_at: "2026-01-01T00:00:00.000Z",
+    },
+  });
+
+  const result = prepareLocalWriteSnapshot(repoDir, memoryDir, {
+    codexHome: "/unused",
+    discoverThreads: () => [thread],
+  });
+
+  assert.equal(result.stageDir, path.join(memoryDir, "local-threads"));
+  assert.equal(fs.existsSync(path.join(result.stageDir, "threads", "thread-stage.jsonl")), true);
+  assert.equal(fs.existsSync(path.join(result.stageDir, "memory.md")), false);
+  assert.equal(fs.existsSync(path.join(result.stageDir, "memory-state.json")), false);
+  assert.equal(fs.existsSync(path.join(result.stageDir, "repo.json")), false);
+  assert.equal(fs.existsSync(path.join(memoryDir, "threads", "thread-stage.jsonl")), false);
+  assert.match(result.local_result.changed_paths.join("\n"), /threads\/thread-stage\.jsonl/);
+});
+
 test("syncChangedThreads keeps local thread updates when remote push is unavailable", async () => {
   const memoryDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-handoff-sync-remote-skip-"));
   const thread = makeThread();
@@ -413,7 +472,7 @@ test("syncChangedThreads keeps local thread updates when remote push is unavaila
   assert.equal(result.threads_exported, 1);
   assert.equal(result.new_thread_count, 1);
   assert.equal(result.new_threads[0].thread_id, "thread-123");
-  assert.equal(fs.existsSync(path.join(memoryDir, "threads", "thread-123.jsonl")), true);
+  assert.equal(fs.existsSync(path.join(memoryDir, "local-threads", "threads", "thread-123.jsonl")), true);
 });
 
 test("pushChangedThreads reuses a precomputed local result without reapplying changes", async () => {
@@ -451,7 +510,7 @@ test("pushChangedThreads reuses a precomputed local result without reapplying ch
 test("pushChangedThreads can upload from a local staging dir and mirror the remote cache on success", async () => {
   const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-handoff-stage-push-repo-"));
   const memoryDir = path.join(repoDir, ".codex-handoff");
-  const stageDir = path.join(memoryDir, ".local-write");
+  const stageDir = path.join(memoryDir, "local-threads");
   fs.mkdirSync(path.join(stageDir, "threads"), { recursive: true });
   fs.writeFileSync(path.join(stageDir, "threads", "thread-stage.jsonl"), `${JSON.stringify({
     session_id: "thread-stage",
@@ -476,6 +535,7 @@ test("pushChangedThreads can upload from a local staging dir and mirror the remo
   fs.writeFileSync(path.join(memoryDir, "repo.json"), JSON.stringify({
     repo_path: repoDir,
     repo_slug: "project",
+    machine_id: "machine-a",
     remote_auth_type: "test",
     remote_auth_path: "test",
     remote_prefix: "repos/project/",
@@ -508,7 +568,69 @@ test("pushChangedThreads can upload from a local staging dir and mirror the remo
     assert.equal(result.remote_push_succeeded, true);
     assert.equal(fs.existsSync(path.join(memoryDir, "threads", "thread-stage.jsonl")), true);
     assert.equal(JSON.parse(fs.readFileSync(path.join(memoryDir, "current-thread.json"), "utf8")).thread_id, "thread-stage");
-    assert.ok(uploaded.some((entry) => entry.key === "repos/project/threads/thread-stage.jsonl"));
+    assert.ok(uploaded.some((entry) => entry.key === "repos/project/machine-sources/machine-a/threads/thread-stage.jsonl"));
+  } finally {
+    require.cache[r2Path].exports = originalR2;
+    delete require.cache[syncPath];
+  }
+});
+
+test("syncNow only uploads thread payloads when sourceDir is local-threads", async () => {
+  const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-handoff-sync-now-memory-root-"));
+  const memoryDir = path.join(repoDir, ".codex-handoff");
+  const stageDir = path.join(memoryDir, "local-threads");
+  fs.mkdirSync(path.join(stageDir, "threads"), { recursive: true });
+  fs.writeFileSync(path.join(stageDir, "threads", "thread-stage.jsonl"), `${JSON.stringify({
+    session_id: "thread-stage",
+    turn_id: "turn-1",
+    timestamp: null,
+    role: "user",
+    phase: null,
+    message: "staged local thread",
+  })}\n`, "utf8");
+  fs.writeFileSync(path.join(stageDir, "thread-index.json"), JSON.stringify([
+    {
+      thread_id: "thread-stage",
+      title: "Stage Thread",
+      thread_name: "Stage Thread",
+      created_at: 1,
+      updated_at: 2,
+      source_session_relpath: "sessions/stage.jsonl",
+      bundle_path: "threads/thread-stage.jsonl",
+    },
+  ], null, 2) + "\n", "utf8");
+  fs.writeFileSync(path.join(stageDir, "current-thread.json"), JSON.stringify({ thread_id: "thread-stage" }, null, 2) + "\n", "utf8");
+  fs.writeFileSync(path.join(memoryDir, "repo.json"), JSON.stringify({
+    repo_path: repoDir,
+    repo_slug: "project",
+    machine_id: "machine-a",
+    remote_auth_type: "test",
+    remote_auth_path: "test",
+    remote_prefix: "repos/project/",
+  }, null, 2) + "\n", "utf8");
+  const uploaded = [];
+  const r2Path = require.resolve("./r2");
+  const originalR2 = require(r2Path);
+  require.cache[r2Path].exports = {
+    ...originalR2,
+    putR2Object: async (_profile, key, payload) => { uploaded.push({ key, payload: Buffer.from(payload).toString("utf8") }); return { status: "200" }; },
+    deleteR2Object: async () => ({ status: "204" }),
+    listR2Objects: async () => [],
+    getR2Object: async () => Buffer.alloc(0),
+  };
+  const syncPath = require.resolve("./sync");
+  delete require.cache[syncPath];
+  const freshSync = require("./sync");
+
+  try {
+    await freshSync.syncNow(repoDir, memoryDir, { fake: true }, {
+      prefix: "repos/project/",
+      sourceDir: stageDir,
+    });
+
+    assert.ok(uploaded.some((entry) => entry.key === "repos/project/machine-sources/machine-a/threads/thread-stage.jsonl"));
+    assert.equal(uploaded.some((entry) => entry.key === "repos/project/memory.md"), false);
+    assert.equal(uploaded.some((entry) => entry.key === "repos/project/memory-state.json"), false);
   } finally {
     require.cache[r2Path].exports = originalR2;
     delete require.cache[syncPath];
@@ -518,11 +640,12 @@ test("pushChangedThreads can upload from a local staging dir and mirror the remo
 test("pullRepoMemorySnapshot preserves local staging files while pruning the remote cache", async () => {
   const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-handoff-stage-preserve-repo-"));
   const memoryDir = path.join(repoDir, ".codex-handoff");
-  const stageDir = path.join(memoryDir, ".local-write");
+  const stageDir = path.join(memoryDir, "local-threads");
+  const readDir = path.join(memoryDir, "synced-threads");
   const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), "codex-handoff-stage-preserve-home-"));
-  fs.mkdirSync(path.join(memoryDir, "threads"), { recursive: true });
+  fs.mkdirSync(path.join(readDir, "threads"), { recursive: true });
   fs.mkdirSync(path.join(stageDir, "threads"), { recursive: true });
-  fs.writeFileSync(path.join(memoryDir, "threads", "old-remote.jsonl"), `${JSON.stringify({
+  fs.writeFileSync(path.join(readDir, "threads", "old-remote.jsonl"), `${JSON.stringify({
     session_id: "old-remote",
     turn_id: "turn-1",
     timestamp: null,
@@ -552,38 +675,28 @@ test("pullRepoMemorySnapshot preserves local staging files while pruning the rem
   fs.writeFileSync(path.join(memoryDir, "repo.json"), JSON.stringify({
     repo_path: repoDir,
     repo_slug: "project",
+    machine_id: "machine-local",
     remote_auth_type: "test",
     remote_auth_path: "test",
     remote_prefix: "repos/project/",
   }, null, 2) + "\n", "utf8");
 
   const remoteObjects = new Map();
-  remoteObjects.set("repos/project/repo.json", Buffer.from(JSON.stringify({
-    repo_path: repoDir,
-    repo_slug: "project",
-    remote_auth_type: "test",
-    remote_auth_path: "test",
-    remote_prefix: "repos/project/",
-  }, null, 2) + "\n"));
-  remoteObjects.set("repos/project/thread-index.json", Buffer.from(JSON.stringify([
-    {
-      thread_id: "remote-new",
-      title: "Remote New",
-      thread_name: "Remote New",
-      created_at: 1,
-      updated_at: 3,
-      source_session_relpath: "sessions/remote-new.jsonl",
-      bundle_path: "threads/remote-new.jsonl",
-    },
-  ], null, 2) + "\n"));
-  remoteObjects.set("repos/project/current-thread.json", Buffer.from(JSON.stringify({ thread_id: "remote-new" }, null, 2) + "\n"));
-  remoteObjects.set("repos/project/threads/remote-new.jsonl", Buffer.from(`${JSON.stringify({
+  remoteObjects.set("repos/project/machine-sources/machine-remote/threads/remote-new.jsonl", Buffer.from(`${JSON.stringify({
     session_id: "remote-new",
     turn_id: "turn-1",
     timestamp: null,
     role: "assistant",
     phase: null,
     message: "remote cached thread",
+  })}\n`));
+  remoteObjects.set("repos/project/machine-sources/machine-local/threads/local-owned.jsonl", Buffer.from(`${JSON.stringify({
+    session_id: "local-owned",
+    turn_id: "turn-1",
+    timestamp: null,
+    role: "assistant",
+    phase: null,
+    message: "should not be pulled back to same machine",
   })}\n`));
 
   const r2Path = require.resolve("./r2");
@@ -601,9 +714,15 @@ test("pullRepoMemorySnapshot preserves local staging files while pruning the rem
 
   try {
     const result = await freshSync.pullRepoMemorySnapshot(repoDir, memoryDir, { fake: true }, require("./workspace").loadRepoState(memoryDir), { codexHome });
-    assert.equal(result.imported_thread.thread_id, "remote-new");
-    assert.equal(fs.existsSync(path.join(memoryDir, "threads", "remote-new.jsonl")), true);
-    assert.equal(fs.existsSync(path.join(memoryDir, "threads", "old-remote.jsonl")), false);
+    assert.equal(result.imported_thread.thread_id, "local-owned");
+    assert.equal(fs.existsSync(path.join(readDir, "threads", "remote-new.jsonl")), true);
+    assert.equal(fs.existsSync(path.join(readDir, "threads", "local-owned.jsonl")), true);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(readDir, "current-thread.json"), "utf8")).thread_id, "local-owned");
+    assert.equal(JSON.parse(fs.readFileSync(path.join(readDir, "thread-index.json"), "utf8")).length, 2);
+    assert.equal(fs.existsSync(path.join(memoryDir, "memory.md")), false);
+    assert.equal(fs.existsSync(path.join(memoryDir, "memory-state.json")), false);
+    assert.equal(fs.existsSync(path.join(readDir, "repo.json")), false);
+    assert.equal(fs.existsSync(path.join(readDir, "threads", "old-remote.jsonl")), false);
     assert.equal(fs.existsSync(path.join(stageDir, "threads", "local-stage.jsonl")), true);
   } finally {
     require.cache[r2Path].exports = originalR2;
@@ -651,10 +770,10 @@ test("applyChangedThreadsLocally only flags notifications when a bundle is first
 });
 
 test("sync file filter includes root memory artifacts", () => {
-  assert.equal(_test.shouldSyncRelpath("memory.md", [], null), true);
-  assert.equal(_test.shouldSyncRelpath("memory-state.json", [], null), true);
+  assert.equal(_test.shouldSyncRelpath("memory.md", [], null), false);
+  assert.equal(_test.shouldSyncRelpath("memory-state.json", [], null), false);
   assert.equal(_test.shouldSyncRelpath("sync-state.json", [], null), true);
   assert.equal(_test.shouldSyncRelpath("threads/thread-1.jsonl", ["thread-1"], "thread-1"), true);
-  assert.equal(_test.shouldSyncRelpath("threads/thread-1.json", ["thread-1"], "thread-1"), true);
-  assert.equal(_test.shouldSyncRelpath("threads/thread-2.json", ["thread-1"], "thread-1"), false);
+  assert.equal(_test.shouldSyncRelpath("threads/thread-1.jsonl", ["thread-1"], "thread-1"), true);
+  assert.equal(_test.shouldSyncRelpath("threads/thread-2.jsonl", ["thread-1"], "thread-1"), false);
 });

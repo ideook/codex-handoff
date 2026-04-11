@@ -19,7 +19,7 @@ const {
   searchRaw,
 } = require("./lib/reader");
 const { cleanupLegacyAuthArtifacts, loadConfig, saveConfig } = require("./lib/runtime-config");
-const { memoryPath, memoryStatePath, summarizeMemoryWithCodex } = require("./lib/memory");
+const { memoryPath, memoryStatePath, refreshLocalMemory, summarizeMemoryWithCodex } = require("./lib/memory");
 const { findScriptProcessPids } = require("./lib/process-utils");
 const {
   DEFAULT_REMOTE_AUTH_PATH,
@@ -37,10 +37,9 @@ const {
   describeSyncState,
   exportRepoThreads,
   importThreadBundleToCodex,
+  prepareLocalWriteSnapshot,
   pullRepoMemorySnapshot,
   pullMemoryTree,
-  pushMemoryTree,
-  recordSyncEvent,
   syncNow,
 } = require("./lib/sync");
 const {
@@ -49,12 +48,14 @@ const {
   ensureAgentsBlock,
   ensureMemoryDirGitignored,
   inferRepoSlug,
+  localThreadsDir,
   loadRepoState,
   materializedRootPaths,
   removeAgentsBlock,
   removeMemoryDirGitignoreEntry,
   registerRepoMapping,
   saveRepoState,
+  syncedThreadsDir,
   unregisterRepoMapping,
 } = require("./lib/workspace");
 const { deleteR2Object, getR2Object, listR2Objects, putR2Object, validateR2Credentials } = require("./lib/r2");
@@ -322,13 +323,18 @@ async function handleSetup(repoPath, memoryDir, configDir, codexHome, args) {
   let syncAction = null;
   if (!args.skipSyncNow) {
     if (remoteExists) {
-      syncResult = await performSyncPull(repoPath, memoryDir, profile, repoState, { codexHome, thread: args.thread || null });
+      syncResult = await performSyncPull(repoPath, memoryDir, profile, repoState, { codexHome, thread: args.thread || null, refreshMemory: true });
       syncAction = "pull";
     } else {
+      const stageSnapshot = prepareLocalWriteSnapshot(repoPath, memoryDir, {
+        codexHome,
+        includeRawThreads: repoIncludesRawThreads(repoState),
+      });
       syncResult = await syncNow(repoPath, memoryDir, profile, {
         codexHome,
         includeRawThreads: repoIncludesRawThreads(repoState),
         prefix: repoState.remote_prefix,
+        sourceDir: stageSnapshot.stageDir,
       });
       syncAction = "push";
     }
@@ -421,7 +427,7 @@ async function handleReceive(repoPath, memoryDir, configDir, codexHome, args) {
   }
   const repoState = loadRepoState(memoryDir);
   const profile = loadRepoR2Profile(memoryDir);
-  const syncResult = await performSyncPull(repoPath, memoryDir, profile, repoState, { codexHome, thread: args.thread || null });
+  const syncResult = await performSyncPull(repoPath, memoryDir, profile, repoState, { codexHome, thread: args.thread || null, refreshMemory: true });
   let autostartResult = null;
   let autostartError = null;
   if (!args.skipAutostart) {
@@ -466,20 +472,21 @@ async function handleThreads(args, repoPath, memoryDir, codexHome) {
     return 0;
   }
   if (args.subcommand === "export") {
-    const threads = await exportRepoThreads(repoPath, memoryDir, {
+    const stageDir = localThreadsDir(memoryDir);
+    const threads = await exportRepoThreads(repoPath, stageDir, {
       codexHome,
       includeRawThreads: resolveIncludeRawThreads(args, false),
     });
     printJson({
       repo: repoPath,
-      memory_dir: memoryDir,
+      memory_dir: stageDir,
       thread_count: threads.length,
       current_thread: threads[0]?.threadId || null,
     });
     return 0;
   }
   if (args.subcommand === "import") {
-    const result = importThreadBundleToCodex(repoPath, memoryDir, args.thread, { codexHome });
+    const result = importThreadBundleToCodex(repoPath, syncedThreadsDir(memoryDir), args.thread, { codexHome });
     printJson({ repo: repoPath, thread_id: args.thread, import_result: result });
     return 0;
   }
@@ -506,35 +513,34 @@ async function handleSync(args, repoPath, memoryDir, configDir, codexHome) {
   }
   const profile = loadRepoR2Profile(memoryDir);
   if (args.subcommand === "push") {
-    const uploaded = await pushMemoryTree(profile, memoryDir, repoState.remote_prefix);
-    recordSyncEvent(memoryDir, {
-      repoPath,
-      prefix: repoState.remote_prefix,
-      direction: "push",
-      command: "push",
-      objectsUploaded: uploaded.length,
+    const stageSnapshot = prepareLocalWriteSnapshot(repoPath, memoryDir, {
+      codexHome,
+      includeRawThreads: repoIncludesRawThreads(repoState),
     });
-    printJson(augmentSyncResult(memoryDir, repoState, {
-      repo: repoPath,
-      repo_slug: repoState.repo_slug,
-      remote_auth_type: repoState.remote_auth_type,
-      remote_auth_path: repoState.remote_auth_path,
-      remote_prefix: repoState.remote_prefix,
+    const result = await syncNow(repoPath, memoryDir, profile, {
+      codexHome,
+      includeRawThreads: repoIncludesRawThreads(repoState),
       prefix: repoState.remote_prefix,
-      uploaded_objects: uploaded.length,
-    }));
+      sourceDir: stageSnapshot.stageDir,
+    });
+    printJson(result);
     return 0;
   }
   if (args.subcommand === "pull") {
-    const result = await performSyncPull(repoPath, memoryDir, profile, repoState, { codexHome, thread: args.thread || null });
+    const result = await performSyncPull(repoPath, memoryDir, profile, repoState, { codexHome, thread: args.thread || null, refreshMemory: true });
     printJson(result);
     return 0;
   }
   if (args.subcommand === "now") {
+    const stageSnapshot = prepareLocalWriteSnapshot(repoPath, memoryDir, {
+      codexHome,
+      includeRawThreads: resolveIncludeRawThreads(args, repoIncludesRawThreads(repoState)),
+    });
     const result = await syncNow(repoPath, memoryDir, profile, {
       codexHome,
       includeRawThreads: resolveIncludeRawThreads(args, repoIncludesRawThreads(repoState)),
       prefix: repoState.remote_prefix,
+      sourceDir: stageSnapshot.stageDir,
     });
     printJson(result);
     return 0;
@@ -724,8 +730,8 @@ function doctor(repoPath, memoryDir, configDir, codexHome) {
     sync_state_path: syncReport.sync_state_path,
     sync_health: syncReport.sync_health,
     materialized_root: {
-      current_thread_present: fs.existsSync(currentThreadPath(memoryDir)),
-      thread_index_present: fs.existsSync(path.join(memoryDir, "thread-index.json")),
+      current_thread_present: fs.existsSync(currentThreadPath(syncedThreadsDir(memoryDir))),
+      thread_index_present: fs.existsSync(path.join(syncedThreadsDir(memoryDir), "thread-index.json")),
     },
     watch_service: state,
   };
@@ -879,8 +885,11 @@ function augmentSyncResult(memoryDir, repoState, payload) {
   return result;
 }
 
-async function performSyncPull(repoPath, memoryDir, profile, repoState, { codexHome, thread = null } = {}) {
+async function performSyncPull(repoPath, memoryDir, profile, repoState, { codexHome, thread = null, refreshMemory = false } = {}) {
   const result = await pullRepoMemorySnapshot(repoPath, memoryDir, profile, repoState, { codexHome, thread });
+  if (refreshMemory) {
+    result.memory_refresh = refreshLocalMemory(repoPath, memoryDir);
+  }
   return augmentSyncResult(memoryDir, repoState, result);
 }
 
@@ -1131,9 +1140,9 @@ async function purgeRemoteThread(profile, repoSlug, threadId, { apply = false } 
   }
   if (currentThreadId === threadId) {
     if (nextThreadId) {
-      await rematerializeRemoteRootFromThread(profile, prefix, nextThreadId);
+      await putRemoteJson(profile, currentThreadKey, { thread_id: nextThreadId });
     } else {
-      await deleteRemoteKeysIfPresent(profile, [currentThreadKey, `${prefix}latest.md`, `${prefix}handoff.json`]);
+      await deleteRemoteKeysIfPresent(profile, [currentThreadKey]);
     }
   }
   payload.deleted_keys = threadKeys.length;
@@ -1161,16 +1170,6 @@ async function readRemoteThreadIndex(profile, key) {
 async function readRemoteCurrentThread(profile, key) {
   const payload = await readRemoteJson(profile, key);
   return payload && typeof payload.thread_id === "string" ? payload.thread_id : null;
-}
-
-async function rematerializeRemoteRootFromThread(profile, prefix, threadId) {
-  const bundle = await readRemoteJson(profile, `${prefix}threads/${threadId}.json`);
-  if (!bundle) {
-    throw new Error(`Missing remote thread bundle for ${threadId}`);
-  }
-  await putR2Object(profile, `${prefix}latest.md`, Buffer.from(bundle.latest_md || "", "utf8"));
-  await putRemoteJson(profile, `${prefix}handoff.json`, bundle.handoff || {});
-  await putRemoteJson(profile, `${prefix}current-thread.json`, { thread_id: threadId });
 }
 
 async function deleteRemoteKeysIfPresent(profile, keys) {

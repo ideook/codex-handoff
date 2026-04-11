@@ -164,16 +164,7 @@ function findScriptProcessPids(scriptName, { configDir = null } = {}) {
 function detectCodexProcesses(processes = null, options = {}) {
   const candidates = Array.isArray(processes) ? processes : listProcessDetails();
   const matches = candidates.filter((item) => isCodexAppProcess(item));
-  const platform = options.platform || process.platform;
-  const shouldRequireVisibleWindow = platform === "win32" || platform === "darwin";
-  if (!shouldRequireVisibleWindow) {
-    return matches;
-  }
-  const matchesWithWindowState = matches.filter((item) => typeof item?.hasVisibleWindow === "boolean");
-  if (!matchesWithWindowState.length) {
-    return matches;
-  }
-  return matchesWithWindowState.filter((item) => item.hasVisibleWindow);
+  return matches;
 }
 
 function macosVisibleWindowPids() {

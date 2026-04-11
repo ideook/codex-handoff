@@ -31,3 +31,4 @@ pnpm-debug.log*
 .codex-backups
 .tmp-remote-local-split-qPlPpX
 .tmp-sync-repro-CAV1P3
+.npm-cache

@@ -54,7 +54,7 @@ The product should not behave like a generic filesystem sync tool. It should syn
 4. Codex attaches the current repository.
 5. Codex reads the local thread list and session index to discover repo-related threads.
 6. Codex enables and starts the local sync agent.
-7. The agent exports thread bundles under `.codex-handoff/threads/<thread-id>/` with handoff files and optional source logs, then pushes them to the repo's R2 prefix in the background.
+7. The agent exports thread payloads under `.codex-handoff/local-threads/threads/` and pushes them to the repo's R2 prefix in the background.
 
 ### Machine 2
 
@@ -65,8 +65,8 @@ The product should not behave like a generic filesystem sync tool. It should syn
 5. If local unsynced state exists, the agent compares revisions and resolves the serial-handoff case safely before pushing anything back.
 6. The user starts a new Codex session in the synced repo.
 7. `codex-handoff` restores the selected thread's original source log and normalized metadata into local `~/.codex/` storage so the thread can appear in Codex.
-8. `codex-handoff` materializes the selected thread into the root `.codex-handoff/` files.
-9. Codex reads `.codex-handoff/latest.md`, and on demand runs `codex-handoff resume`.
+8. `codex-handoff` materializes the selected thread into `.codex-handoff/synced-threads/`.
+9. Codex reads `.codex-handoff/memory.md`, and on demand runs `codex-handoff resume`.
 
 ## What "agent-first" means here
 
@@ -155,20 +155,17 @@ These commands are the recommended external UX for the future agent package.
 
 The local agent should own:
 
-- watching `.codex-handoff/latest.md`
-- watching `.codex-handoff/handoff.json`
-- watching `.codex-handoff/raw/*.jsonl`
 - scanning the local Codex thread list and session index for repo-related threads
 - reading original session jsonl for discovered threads
 - extracting normalized `session_index` and SQLite thread metadata for those threads
-- exporting thread bundles under `.codex-handoff/threads/<thread-id>/`
-- batching source and handoff uploads
+- exporting thread payloads under `.codex-handoff/local-threads/threads/`
+- batching thread payload uploads
 - debounced sync to the repo's R2 prefix
 - local pull on start, attach, login, wake, and periodic health intervals
 - pre-push remote head checks
 - materializing pulled source logs into local `~/.codex/sessions/...` when raw thread export is enabled
 - upserting pulled normalized metadata into local `~/.codex/session_index.jsonl` and `~/.codex/state_5.sqlite`
-- materializing the selected thread into the root `.codex-handoff/` files after pull
+- materializing the selected thread into `.codex-handoff/synced-threads/` after pull
 - conflict-safe writes using last-modified metadata, revision markers, and local conflict snapshots
 - structured logs for debugging
 

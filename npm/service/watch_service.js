@@ -15,7 +15,7 @@ const {
 } = require("./common");
 const { CursorStore } = require("./cursor_store");
 const { loadRepoR2Profile } = require("../lib/repo-auth");
-const { findManagedRepoForCwd, loadManagedRepos } = require("./repo_registry");
+const { ensureManagedRepoState, findManagedRepoForCwd, loadManagedRepos } = require("./repo_registry");
 const { resolveObservedThread } = require("./watch_context");
 const { isRolloutPath, readRolloutLastRecordSummary, readRolloutMeta } = require("./rollout_meta");
 const { readIncrementalJsonl } = require("./rollout_incremental");
@@ -23,6 +23,7 @@ const { RepoSyncScheduler } = require("./scheduler");
 const { notify } = require("../lib/notify");
 const { extractCanonicalMessages } = require("../lib/summarize");
 const { applyChangedThreadsLocally, pushChangedThreads } = require("../lib/sync");
+const { localThreadsDir } = require("../lib/workspace");
 
 const DEFAULT_DEBOUNCE_MS = 1500;
 const DEFAULT_EVENT_BATCH_MS = 100;
@@ -120,7 +121,8 @@ async function main() {
     debounceMs: options.debounceMs,
     runSync: async (repo, payload) => {
       const memoryDir = path.join(repo.repoPath, ".codex-handoff");
-      const localWriteDir = path.join(memoryDir, ".local-write");
+      ensureManagedRepoState(memoryDir, repo);
+      const stageDir = localThreadsDir(memoryDir);
       let profile = null;
       let authError = null;
       try {
@@ -131,8 +133,8 @@ async function main() {
       const result = await pushChangedThreads(repo.repoPath, memoryDir, profile, {
         prefix: repo.remotePrefix,
         localResult: payload?.localResult || null,
-        sourceDir: payload?.sourceDir || localWriteDir,
-        mirrorOnSuccess: true,
+        sourceDir: payload?.sourceDir || stageDir,
+        mirrorOnSuccess: false,
       });
       if (authError) {
         log(`remote push skipped ${repo.repoPath}: ${authError.message}`, serviceLogPath);
@@ -417,8 +419,9 @@ async function main() {
 
       for (const payload of queued.values()) {
         const memoryDir = path.join(payload.repo.repoPath, ".codex-handoff");
-        const localWriteDir = path.join(memoryDir, ".local-write");
-        const localResult = applyChangedThreadsLocally(payload.repo.repoPath, localWriteDir, {
+        ensureManagedRepoState(memoryDir, payload.repo);
+        const stageDir = localThreadsDir(memoryDir);
+        const localResult = applyChangedThreadsLocally(payload.repo.repoPath, stageDir, {
           codexHome: options.codexHome,
           includeRawThreads: payload.repo.includeRawThreads === true,
           changes: payload.changes || [],
@@ -427,7 +430,7 @@ async function main() {
           notifyNewThreads(localResult.new_threads, serviceLogPath);
         }
         if (localResult.changed_paths.length > 0) {
-          scheduler.enqueue(payload.repo, { localResult, sourceDir: localWriteDir });
+          scheduler.enqueue(payload.repo, { localResult, sourceDir: stageDir });
         }
       }
 

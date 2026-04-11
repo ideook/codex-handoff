@@ -2,6 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { summarizeTranscriptBundle } = require("./summarize");
 const { listThreadBundleFiles, readTranscriptFile, resolveThreadBundlePath } = require("./thread-bundles");
+const { syncedThreadsDir, repoStatePath } = require("./workspace");
 
 const DEFAULT_MEMORY_DIRNAME = ".codex-handoff";
 
@@ -13,12 +14,16 @@ function resolveMemoryDir(repoPath, memoryDir = null) {
   return memoryDir ? path.resolve(memoryDir) : path.join(resolveRepoPath(repoPath), DEFAULT_MEMORY_DIRNAME);
 }
 
+function resolveReadDataDir(memoryDir) {
+  return syncedThreadsDir(memoryDir);
+}
+
 function latestPath(memoryDir) {
-  return path.join(memoryDir, "latest.md");
+  return path.join(resolveReadDataDir(memoryDir), "latest.md");
 }
 
 function handoffPath(memoryDir) {
-  return path.join(memoryDir, "handoff.json");
+  return path.join(resolveReadDataDir(memoryDir), "handoff.json");
 }
 
 function memoryPath(memoryDir) {
@@ -26,11 +31,15 @@ function memoryPath(memoryDir) {
 }
 
 function currentThreadPath(memoryDir) {
-  return path.join(memoryDir, "current-thread.json");
+  return path.join(resolveReadDataDir(memoryDir), "current-thread.json");
 }
 
 function threadsDir(memoryDir) {
-  return path.join(memoryDir, "threads");
+  return path.join(resolveReadDataDir(memoryDir), "threads");
+}
+
+function threadIndexPath(memoryDir) {
+  return path.join(resolveReadDataDir(memoryDir), "thread-index.json");
 }
 
 function readLatest(memoryDir) {
@@ -57,11 +66,12 @@ function readMemory(memoryDir) {
 }
 
 function* iterTranscriptRecords(memoryDir) {
+  const dataDir = resolveReadDataDir(memoryDir);
   const directory = threadsDir(memoryDir);
   if (!fs.existsSync(directory)) {
     return;
   }
-  for (const filePath of listThreadBundleFiles(memoryDir)) {
+  for (const filePath of listThreadBundleFiles(dataDir)) {
     const transcript = readTranscriptFile(filePath);
     const rows = Array.isArray(transcript) ? transcript : [];
     for (let index = 0; index < rows.length; index += 1) {
@@ -83,6 +93,7 @@ function* iterTranscriptRecords(memoryDir) {
 }
 
 function readCurrentThreadBundle(memoryDir) {
+  const dataDir = resolveReadDataDir(memoryDir);
   const currentPath = currentThreadPath(memoryDir);
   if (!fs.existsSync(currentPath)) {
     return null;
@@ -93,12 +104,12 @@ function readCurrentThreadBundle(memoryDir) {
     if (!threadId) {
       return null;
     }
-    const bundlePath = resolveThreadBundlePath(memoryDir, threadId);
+    const bundlePath = resolveThreadBundlePath(dataDir, threadId);
     if (!fs.existsSync(bundlePath)) {
       return null;
     }
     const transcript = readTranscriptFile(bundlePath);
-    const indexEntries = JSON.parse(fs.readFileSync(path.join(memoryDir, "thread-index.json"), "utf8"));
+    const indexEntries = JSON.parse(fs.readFileSync(threadIndexPath(memoryDir), "utf8"));
     const indexEntry = Array.isArray(indexEntries) ? indexEntries.find((item) => item.thread_id === threadId) : null;
     return {
       thread_id: threadId,
@@ -113,7 +124,7 @@ function readCurrentThreadBundle(memoryDir) {
 
 function resolveRepoFromMemory(memoryDir) {
   try {
-    const repoPath = JSON.parse(fs.readFileSync(path.join(memoryDir, "repo.json"), "utf8")).workspace_root;
+    const repoPath = JSON.parse(fs.readFileSync(repoStatePath(memoryDir), "utf8")).workspace_root;
     return repoPath || memoryDir;
   } catch {
     return memoryDir;
@@ -192,7 +203,7 @@ function extractRecords(memoryDir, { sessionId = null, turnId = null } = {}) {
 }
 
 function countThreadFiles(memoryDir) {
-  return listThreadBundleFiles(memoryDir).length;
+  return listThreadBundleFiles(resolveReadDataDir(memoryDir)).length;
 }
 
 function countTranscriptRecords(memoryDir) {

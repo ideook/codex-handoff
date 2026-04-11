@@ -13,40 +13,38 @@ const cliPath = path.join(__dirname, "bin", "codex-handoff.js");
 function makeFixtureRepo() {
   const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-handoff-cli-"));
   const memoryDir = path.join(repoDir, ".codex-handoff");
-  const threadsDir = path.join(memoryDir, "threads");
+  const readDir = path.join(memoryDir, "synced-threads");
+  const threadsDir = path.join(readDir, "threads");
   fs.mkdirSync(threadsDir, { recursive: true });
   fs.writeFileSync(
-    path.join(threadsDir, "thread-1.json"),
-    JSON.stringify(
-      [
-        {
-          session_id: "sess-1",
-          turn_id: "turn-0",
-          timestamp: "2026-04-07T00:00:00+09:00",
-          role: "user",
-          phase: null,
-          message: "Validate restore output.",
-        },
-        {
-          session_id: "sess-1",
-          turn_id: "turn-1",
-          timestamp: "2026-04-07T00:00:01+09:00",
-          role: "assistant",
-          phase: "final_answer",
-          message: "reader CLI should build a restore pack from scene-evidence notes",
-        },
-        {
-          session_id: "sess-1",
-          turn_id: "turn-2",
-          timestamp: "2026-04-07T00:00:02+09:00",
-          role: "assistant",
-          phase: "commentary",
-          message: "unrelated output",
-        },
-      ],
-      null,
-      2,
-    ),
+    path.join(threadsDir, "thread-1.jsonl"),
+    [
+      JSON.stringify({
+        session_id: "sess-1",
+        turn_id: "turn-0",
+        timestamp: "2026-04-07T00:00:00+09:00",
+        role: "user",
+        phase: null,
+        message: "Validate restore output.",
+      }),
+      JSON.stringify({
+        session_id: "sess-1",
+        turn_id: "turn-1",
+        timestamp: "2026-04-07T00:00:01+09:00",
+        role: "assistant",
+        phase: "final_answer",
+        message: "reader CLI should build a restore pack from scene-evidence notes",
+      }),
+      JSON.stringify({
+        session_id: "sess-1",
+        turn_id: "turn-2",
+        timestamp: "2026-04-07T00:00:02+09:00",
+        role: "assistant",
+        phase: "commentary",
+        message: "unrelated output",
+      }),
+      "",
+    ].join("\n"),
     "utf8",
   );
   fs.writeFileSync(
@@ -92,8 +90,14 @@ function makeFixtureRepo() {
     ) + "\n",
     "utf8",
   );
+  fs.writeFileSync(path.join(memoryDir, "memory.md"), "# Repo Memory\n\n- Fixture memory.\n", "utf8");
   fs.writeFileSync(
-    path.join(memoryDir, "thread-index.json"),
+    path.join(memoryDir, "memory-state.json"),
+    JSON.stringify({ schema_version: "1.0", updated_at: "3026-04-07T00:00:00Z" }, null, 2) + "\n",
+    "utf8",
+  );
+  fs.writeFileSync(
+    path.join(readDir, "thread-index.json"),
     JSON.stringify([{
       thread_id: "thread-1",
       title: "Fixture Thread",
@@ -101,12 +105,12 @@ function makeFixtureRepo() {
       created_at: 1,
       updated_at: 1,
       source_session_relpath: "sessions/2026/04/07/rollout-thread-1.jsonl",
-      bundle_path: "threads/thread-1.json"
+      bundle_path: "threads/thread-1.jsonl"
     }], null, 2) + "\n",
     "utf8",
   );
   fs.writeFileSync(
-    path.join(memoryDir, "current-thread.json"),
+    path.join(readDir, "current-thread.json"),
     JSON.stringify({ thread_id: "thread-1" }, null, 2) + "\n",
     "utf8",
   );
