@@ -31,12 +31,31 @@ Run a one-shot export and push for the current repo.
 codex-handoff sync now
 ```
 
-### `codex-handoff uninstall`
+### `codex-handoff detach`
 
 Detach the current repo from codex-handoff management.
 
 ```bash
-codex-handoff uninstall
+codex-handoff detach
+```
+
+`codex-handoff uninstall` remains as a compatibility alias.
+
+### `codex-handoff purge-local`
+
+Remove local handoff artifacts from `.codex-handoff/` while preserving repo
+credentials and repo attachment metadata.
+
+Preview:
+
+```bash
+codex-handoff purge-local
+```
+
+Apply:
+
+```bash
+codex-handoff purge-local --apply
 ```
 
 ## Inspection
@@ -55,12 +74,16 @@ Inspect sync health for the current repo.
 
 ### `codex-handoff memory status`
 
-Inspect the root repo-level memory artifact.
+Inspect the optional root repo-level memory artifact. This is not part of the
+default bootstrap read path, which stays inside `.codex-handoff/synced-threads/`.
 
 ### `codex-handoff memory summarize`
 
 Run isolated AI-assisted summarization and atomically update
 `.codex-handoff/memory.md`.
+
+This command is optional and manual. The default bootstrap flow does not depend
+on repo-root memory files.
 
 By default this passes a compact deterministic `thread-digest.json` into the
 isolated summarizer and does not copy full thread bundles. Use
@@ -98,6 +121,22 @@ Clear the current repo's `.codex-handoff/.env.local` credentials file.
 ### `codex-handoff remote repos`
 
 List synced repo slugs visible in the remote backend.
+
+### `codex-handoff remote purge-repo`
+
+Delete the remote R2 prefix for one repo slug.
+
+Preview:
+
+```bash
+codex-handoff remote purge-repo --repo-slug <slug>
+```
+
+Apply:
+
+```bash
+codex-handoff remote purge-repo --repo-slug <slug> --apply
+```
 
 ## Agent Control
 

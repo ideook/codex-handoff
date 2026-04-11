@@ -84,8 +84,10 @@ producer pass before stopping the watcher:
 2. stop without rewriting `.codex-handoff/local-threads/`
 3. stop without attempting repo memory summarization
 
-Consumer-side memory is generated later from `.codex-handoff/synced-threads/`
-in explicit pull flows such as `receive`, `sync pull`, and pull-based `setup`.
+Consumer-side bootstrap reads stay inside `.codex-handoff/synced-threads/`.
+The default read path starts with `current-thread.json`, uses
+`thread-index.json` to locate additional context when needed, and reads only
+the selected thread bundles under `threads/`.
 
 ## Important Files
 
@@ -94,10 +96,14 @@ in explicit pull flows such as `receive`, `sync pull`, and pull-based `setup`.
 - `.codex-handoff/repo.json`
 - `.codex-handoff/.env.local`
 - `.codex-handoff/synced-threads/`
+- `.codex-handoff/synced-threads/current-thread.json`
+- `.codex-handoff/synced-threads/thread-index.json`
+- `.codex-handoff/synced-threads/threads/`
 - `.codex-handoff/local-threads/`
+- `.codex-handoff/sync-state.json`
+- optional/manual derived memory artifacts:
 - `.codex-handoff/memory.md`
 - `.codex-handoff/memory-state.json`
-- `.codex-handoff/sync-state.json`
 
 ### Global runtime files
 

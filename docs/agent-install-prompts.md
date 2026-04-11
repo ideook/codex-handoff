@@ -4,39 +4,55 @@ These are short user-facing prompts for Codex when using `codex-handoff`.
 
 The prompts are intentionally brief. Users should not need to know the internal
 CLI flow. The skill is responsible for mapping these prompts to `setup`,
-`receive`, `sync now`, and optional watcher automation.
+`receive`, `sync now`, and explicit watcher automation requests.
 
-## 1. Install And Start Sync
+## 1. Install If Needed, Then Set Up And Start
 
-Use when nothing is installed yet and the user wants Codex to set everything up.
+Use on any machine when the user wants Codex to make sure the package is
+available, then finish repo setup and immediate agent start for the current
+project.
 
-```text
-Install `@brdgkr/codex-handoff` and start sync for this repository.
-Do not stop at package installation. Finish the setup so it is actually ready to run.
-```
-
-## 2. Set Up This Repo
-
-Use when the package is already installed but this repo is not set up yet.
+Recommended prompt:
 
 ```text
-Set up codex-handoff sync for this repository.
+Install or upgrade `@brdgkr/codex-handoff` with npm if needed, then set up codex-handoff for this repository and start the agent.
+Finish only when setup has completed and the agent is running.
 ```
 
-## 3. Sync This Repo
+Short form:
+
+```text
+Install `@brdgkr/codex-handoff` if needed, then set up this repository and start the agent.
+```
+
+Use the same prompt on another PC. Plain `setup` already decides whether the
+repo needs a pull or a push.
+
+## 2. Set Up And Start For This Repo
+
+Use when the package is already installed and the user wants the repo set up
+and the agent started immediately.
+
+```text
+Set up codex-handoff for this repository and start the agent.
+Finish only when setup has completed and the agent is running.
+```
+
+## 3. Set Up This Repo Without Starting The Agent
+
+Use when the package is already installed and the user wants repo setup only,
+without immediate background sync.
+
+```text
+Set up codex-handoff sync for this repository, but do not start the agent yet.
+```
+
+## 4. Sync This Repo
 
 Use when the repo is already set up and the user wants a one-shot sync.
 
 ```text
 Sync this repository with codex-handoff.
-```
-
-## 4. Receive On Another Machine
-
-Use when the user wants to continue work from another PC.
-
-```text
-Receive this repository with codex-handoff on another machine.
 ```
 
 ## 5. Update Package And Reconcile
@@ -67,18 +83,18 @@ Disable codex-handoff push automation for this repository.
 Use when the user wants to detach this repo from codex-handoff management.
 
 ```text
-Remove codex-handoff from this repository.
+Detach this repository from codex-handoff.
 ```
 
 ## Intent Mapping Notes
 
 For maintainers reviewing this file:
 
-- install prompt: package install, then `setup`
-- repo setup prompt: `setup`
+- install + start prompt: npm install or upgrade if needed, then plain `setup`
+- repo setup + start prompt: plain `setup`
+- repo setup only prompt: `setup --skip-agent-start --skip-autostart`
 - sync prompt: `setup --skip-agent-start --skip-autostart` when unattached, `sync now` when already attached, `receive` when cross-machine resume is clear
-- receive prompt: `receive`
 - update prompt: package reinstall/upgrade lifecycle, then `setup`
 - enable automation prompt: `agent enable` then `agent start`
 - disable automation prompt: `agent stop`, optionally `agent disable`
-- remove prompt: `uninstall`
+- remove prompt: `detach`

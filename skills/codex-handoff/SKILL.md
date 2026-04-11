@@ -44,6 +44,22 @@ Interpret short user prompts like this:
 
 - "Install `@brdgkr/codex-handoff` and start sync for this repository."
   Install the npm package, then continue immediately into `setup` for the target repo.
+- "Install or upgrade `@brdgkr/codex-handoff` with npm for this machine, then set up codex-handoff for this repository."
+  Install or upgrade the npm package, then continue immediately into `setup` for the target repo without stopping after package installation.
+- "Install or upgrade `@brdgkr/codex-handoff` with npm if needed, then set up codex-handoff for this repository and start the agent."
+  Ensure the npm package is available, then run plain `codex-handoff --repo . setup` without skip flags.
+- "Install `@brdgkr/codex-handoff` if needed, then set up this repository and start the agent."
+  Ensure the npm package is available, then run plain `codex-handoff --repo . setup` without skip flags.
+- "Install or upgrade `@brdgkr/codex-handoff` with npm for this machine, then set up codex-handoff for this repository and start the agent right away."
+  Install or upgrade the npm package, then run plain `codex-handoff --repo . setup` without skip flags so setup, autostart registration, and agent start complete in one flow.
+- "Install `@brdgkr/codex-handoff` with npm, set up this repository, and start background sync."
+  Install the npm package, then run plain `codex-handoff --repo . setup` without skip flags.
+- "Set up codex-handoff for this repository and start the agent."
+  Run plain `codex-handoff --repo . setup` without skip flags.
+- "Set up codex-handoff for this repository and start the agent right away."
+  Run plain `codex-handoff --repo . setup` without skip flags.
+- "Set up codex-handoff sync for this repository, but do not start the agent yet."
+  Run `codex-handoff --repo . setup --skip-agent-start --skip-autostart`.
 - "Set up codex-handoff sync for this repository."
   Run `setup`.
 - "Sync this repository with codex-handoff."
@@ -57,7 +73,9 @@ Interpret short user prompts like this:
 - "Disable codex-handoff push automation for this repository."
   Run `agent stop`, then `agent disable` if the user wants auto-start disabled too.
 - "Remove codex-handoff from this repository."
-  Run `uninstall`.
+  Run `detach`.
+- "Detach this repository from codex-handoff."
+  Run `detach`.
 
 ## Interpreting "sync"
 
@@ -82,6 +100,20 @@ Only if the user says yes should you enable the watcher:
 2. `codex-handoff --repo . agent start`
 
 If the user does not explicitly agree, stop after the one-shot sync and report the resulting state.
+
+## Explicit start requests
+
+When the user explicitly asks to "start the agent right away", "start background
+sync", or otherwise requests immediate ongoing automation as part of setup, do
+not ask the follow-up from the generic sync flow.
+
+Run plain `codex-handoff --repo . setup` unless the user explicitly says not to
+start the agent. This uses the CLI defaults, which attempt autostart
+registration and start the agent immediately after setup.
+
+The same setup-and-start prompt should be handled the same way on another PC.
+Do not require a different prompt just because the machine changed; plain
+`setup` already decides whether the repo needs a pull or a push.
 
 ## Dotenv rule
 
@@ -150,10 +182,10 @@ Useful commands:
 
 When the user asks to continue previous work in a synced repo:
 
-1. Read `.codex-handoff/memory.md` if it exists; it is the compact repo-level memory intended for new sessions.
-2. If needed, inspect `.codex-handoff/synced-threads/latest.md`.
-3. If needed, inspect `.codex-handoff/synced-threads/handoff.json`
-4. If the bootstrap summary is not enough, run:
+1. Read `.codex-handoff/synced-threads/` first; default bootstrap reads stay inside this directory.
+2. Start with `.codex-handoff/synced-threads/current-thread.json`, then inspect the referenced bundle under `.codex-handoff/synced-threads/threads/`.
+3. If you need broader context, use `.codex-handoff/synced-threads/thread-index.json` to choose additional specific thread bundles before reading them.
+4. If the user asks to continue previous work, run:
    `codex-handoff --repo . resume --goal "<user-goal>"`
 5. Keep evidence usage targeted through:
    - `codex-handoff --repo . search "<query>"`
@@ -165,5 +197,5 @@ When the user asks to continue previous work in a synced repo:
 - Prefer `doctor`, `setup`, and `receive` over ad hoc filesystem searches.
 - Pull before the first push on a new machine.
 - Treat `.codex-handoff` as derived handoff state, not the original Codex source of truth.
-- When the user only wants to continue from synced summaries, prefer `.codex-handoff/memory.md` and `.codex-handoff/synced-threads/handoff.json` over full raw thread restoration.
-- Do not enumerate or bulk-read `.codex-handoff/synced-threads/threads/**`; inspect a specific thread only when memory, handoff state, or the user points to that exact thread.
+- Default restore reads stay inside `.codex-handoff/synced-threads/`; do not depend on repo-root memory files for the standard bootstrap path.
+- Do not enumerate or bulk-read `.codex-handoff/synced-threads/threads/**`; inspect a specific thread only when `current-thread.json`, `thread-index.json`, or the user points to that exact thread.

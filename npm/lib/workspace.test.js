@@ -114,7 +114,7 @@ test("removeAgentsBlock strips the managed block and preserves user content", ()
   assert.doesNotMatch(fs.readFileSync(agentsPath, "utf8"), /codex-handoff:start/);
 });
 
-test("ensureAgentsBlock points consumers to root memory and away from thread scans", () => {
+test("ensureAgentsBlock points consumers to synced thread state and targeted bundle reads", () => {
   const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-handoff-agents-memory-"));
   const repoState = buildRepoState(repoDir, {
     machineId: "machine-1",
@@ -124,8 +124,11 @@ test("ensureAgentsBlock points consumers to root memory and away from thread sca
   const agentsPath = ensureAgentsBlock(repoDir, repoState);
   const content = fs.readFileSync(agentsPath, "utf8");
 
-  assert.match(content, /Read `.codex-handoff\/memory\.md`/);
+  assert.match(content, /Read `.codex-handoff\/synced-threads\/` first/);
+  assert.match(content, /current-thread\.json/);
+  assert.match(content, /thread-index\.json/);
   assert.match(content, /Never enumerate or bulk-read `.codex-handoff\/synced-threads\/threads\/\*\*`/);
+  assert.doesNotMatch(content, /memory\.md/);
 });
 
 test("removeMemoryDirGitignoreEntry removes the codex-handoff entry", () => {

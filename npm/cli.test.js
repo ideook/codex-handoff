@@ -138,6 +138,13 @@ test("CLI defaults to skipping raw thread archives and allows explicit opt-in", 
   assert.equal(memory.maxThreadBytes, 1234);
   assert.equal(memory.maxDigestThreads, 9);
   assert.equal(memory.dryRun, true);
+
+  const detach = parseArgs(["detach"]);
+  assert.equal(detach.command, "detach");
+
+  const purgeLocal = parseArgs(["purge-local", "--apply"]);
+  assert.equal(purgeLocal.command, "purge-local");
+  assert.equal(purgeLocal.apply, true);
 });
 
 test("new repo state defaults to raw thread archives disabled", () => {
@@ -435,6 +442,78 @@ test("CLI uninstall detaches the repo and preserves local memory", () => {
   assert.equal(fs.existsSync(memoryDir), true);
   assert.doesNotMatch(fs.readFileSync(path.join(repoDir, "AGENTS.md"), "utf8"), /codex-handoff:start/);
   assert.equal(fs.existsSync(path.join(repoDir, ".gitignore")), false);
+});
+
+test("CLI detach aliases uninstall", () => {
+  const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-handoff-detach-"));
+  const memoryDir = path.join(repoDir, ".codex-handoff");
+  fs.mkdirSync(memoryDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(repoDir, "AGENTS.md"),
+    [
+      "# Local instructions",
+      "",
+      "<!-- codex-handoff:start -->",
+      "managed block",
+      "<!-- codex-handoff:end -->",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  fs.writeFileSync(path.join(repoDir, ".gitignore"), ".codex-handoff/\n", "utf8");
+
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-handoff-config-"));
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-handoff-home-"));
+  saveRepoState(memoryDir, { repo_slug: "fixture-remote" }, { repoPath: repoDir, configDir });
+
+  const output = execFileSync(process.execPath, [cliPath, "--repo", repoDir, "detach"], {
+    cwd: path.join(__dirname, ".."),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: homeDir,
+      CODEX_HANDOFF_CONFIG_DIR: configDir,
+      NODE_NO_WARNINGS: "1",
+    },
+  });
+
+  const payload = JSON.parse(output);
+  assert.equal(payload.detached, true);
+  assert.equal(payload.uninstall, true);
+  assert.doesNotMatch(fs.readFileSync(path.join(repoDir, "AGENTS.md"), "utf8"), /codex-handoff:start/);
+});
+
+test("CLI purge-local removes local handoff data and preserves dotenv", () => {
+  const repoDir = makeFixtureRepo();
+  const memoryDir = path.join(repoDir, ".codex-handoff");
+  fs.mkdirSync(path.join(memoryDir, "local-threads", "threads"), { recursive: true });
+  fs.mkdirSync(path.join(memoryDir, "threads"), { recursive: true });
+  fs.mkdirSync(path.join(memoryDir, "conflicts"), { recursive: true });
+  fs.writeFileSync(path.join(memoryDir, ".env.local"), "R2_BUCKET=bucket\n", "utf8");
+  fs.writeFileSync(path.join(memoryDir, "local-threads", "threads", "local-thread.jsonl"), "{\"ok\":true}\n", "utf8");
+  fs.writeFileSync(path.join(memoryDir, "threads", "legacy-thread.jsonl"), "{\"ok\":true}\n", "utf8");
+  fs.writeFileSync(path.join(memoryDir, "latest.md"), "# latest\n", "utf8");
+  fs.writeFileSync(path.join(memoryDir, "handoff.json"), "{}\n", "utf8");
+  fs.writeFileSync(path.join(memoryDir, "transcript.md"), "# transcript\n", "utf8");
+  fs.writeFileSync(path.join(memoryDir, "current-thread.json"), "{\"thread_id\":\"legacy\"}\n", "utf8");
+  fs.writeFileSync(path.join(memoryDir, "thread-index.json"), "[]\n", "utf8");
+  fs.writeFileSync(path.join(memoryDir, "conflicts", "note.txt"), "conflict\n", "utf8");
+
+  const preview = JSON.parse(runCli(repoDir, "purge-local"));
+  assert.equal(preview.purge_local, true);
+  assert.equal(preview.applied, false);
+  assert.ok(preview.removed_paths.includes(".codex-handoff/synced-threads"));
+  assert.ok(preview.removed_paths.includes(".codex-handoff/local-threads"));
+  assert.ok(preview.preserved_paths.includes(".codex-handoff/.env.local"));
+
+  const applied = JSON.parse(runCli(repoDir, "purge-local", "--apply"));
+  assert.equal(applied.applied, true);
+  assert.equal(fs.existsSync(path.join(memoryDir, "synced-threads")), false);
+  assert.equal(fs.existsSync(path.join(memoryDir, "local-threads")), false);
+  assert.equal(fs.existsSync(path.join(memoryDir, "threads")), false);
+  assert.equal(fs.existsSync(path.join(memoryDir, "sync-state.json")), false);
+  assert.equal(fs.existsSync(path.join(memoryDir, "memory.md")), false);
+  assert.equal(fs.existsSync(path.join(memoryDir, ".env.local")), true);
 });
 
 test("CLI remote login stores credentials in global .codex-handoff/.env.local", () => {

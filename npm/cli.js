@@ -61,9 +61,10 @@ const {
   refreshRepoStateForCurrentRepo,
   saveRepoState,
   syncedThreadsDir,
+  threadIndexPath,
   unregisterRepoMapping,
 } = require("./lib/workspace");
-const { deleteR2Object, getR2Object, listR2Objects, putR2Object, validateR2Credentials } = require("./lib/r2");
+const { deleteR2Object, getR2Object, listR2Objects, validateR2Credentials } = require("./lib/r2");
 const { configPath, lifecycleLockPath, packageVersionFromHere, resolveCodexHome, resolveConfigDir } = require("./service/common");
 const { ensureManagedRepoState, loadManagedRepos } = require("./service/repo_registry");
 
@@ -130,8 +131,16 @@ function main(argv = process.argv.slice(2)) {
     return Promise.resolve(withLifecycleLock(configDir, () => handleSetup(repoPath, memoryDir, configDir, codexHome, args)));
   }
 
+  if (args.command === "detach") {
+    return Promise.resolve(withLifecycleLock(configDir, () => handleUninstall(repoPath, memoryDir, configDir, codexHome, args)));
+  }
+
   if (args.command === "uninstall") {
     return Promise.resolve(withLifecycleLock(configDir, () => handleUninstall(repoPath, memoryDir, configDir, codexHome, args)));
+  }
+
+  if (args.command === "purge-local") {
+    return Promise.resolve(withLifecycleLock(configDir, () => handlePurgeLocal(repoPath, memoryDir, configDir, codexHome, args)));
   }
 
   if (args.command === "receive") {
@@ -203,17 +212,9 @@ async function handleRemote(args, _repoPath, memoryDir, configDir) {
     printJson(response);
     return 0;
   }
-  if (args.subcommand === "purge-prefix") {
+  if (args.subcommand === "purge-prefix" || args.subcommand === "purge-repo") {
     const profile = loadRepoR2Profile(memoryDir);
     const result = await purgeRemotePrefix(profile, args.repoSlug, { apply: Boolean(args.apply) });
-    result.auth_type = DEFAULT_REMOTE_AUTH_TYPE;
-    result.dotenv_path = repoDotenvPath(memoryDir);
-    printJson(result);
-    return 0;
-  }
-  if (args.subcommand === "purge-thread") {
-    const profile = loadRepoR2Profile(memoryDir);
-    const result = await purgeRemoteThread(profile, args.repoSlug, args.thread, { apply: Boolean(args.apply) });
     result.auth_type = DEFAULT_REMOTE_AUTH_TYPE;
     result.dotenv_path = repoDotenvPath(memoryDir);
     printJson(result);
@@ -384,6 +385,37 @@ async function handleUninstall(repoPath, memoryDir, configDir, _codexHome, _args
     memory_dir_preserved: true,
     credentials_file_preserved: true,
   });
+  return 0;
+}
+
+async function handlePurgeLocal(repoPath, memoryDir, configDir, _codexHome, args) {
+  const agentState = liveServiceState(configDir);
+  const targets = localPurgeTargets(memoryDir);
+  const existing = targets.filter((item) => fs.existsSync(item.path));
+  const payload = {
+    repo: repoPath,
+    purge_local: true,
+    applied: Boolean(args.apply),
+    agent_running: Boolean(agentState?.pid && isRunning(agentState.pid)),
+    removed_count: existing.length,
+    removed_paths: existing.map((item) => item.rel_path),
+    preserved_paths: [
+      ".codex-handoff/.env.local",
+      DEFAULT_REMOTE_AUTH_PATH,
+      ".gitignore",
+      "AGENTS.md",
+    ],
+    note: "Repo attachment and credentials are preserved. Re-run setup if you want to rebuild local handoff state.",
+  };
+  if (!args.apply) {
+    printJson(payload);
+    return 0;
+  }
+  for (const item of existing) {
+    fs.rmSync(item.path, { recursive: true, force: true });
+  }
+  payload.deleted_count = existing.length;
+  printJson(payload);
   return 0;
 }
 
@@ -1153,78 +1185,6 @@ async function purgeRemotePrefix(profile, repoSlug, { apply = false } = {}) {
   return payload;
 }
 
-async function purgeRemoteThread(profile, repoSlug, threadId, { apply = false } = {}) {
-  const prefix = `repos/${repoSlug}/`;
-  const threadPrefix = `${prefix}threads/${threadId}/`;
-  const threadKeys = (await listR2Objects(profile, threadPrefix)).map((item) => item.key);
-  const threadIndexKey = `${prefix}thread-index.json`;
-  const currentThreadKey = `${prefix}current-thread.json`;
-  const currentThreadId = await readRemoteCurrentThread(profile, currentThreadKey);
-  const threadIndex = await readRemoteThreadIndex(profile, threadIndexKey);
-  const remainingIndex = threadIndex.filter((item) => item.thread_id !== threadId);
-  const nextThreadId = currentThreadId === threadId && remainingIndex.length ? remainingIndex[0].thread_id : null;
-  const payload = {
-    repo_slug: repoSlug,
-    thread_id: threadId,
-    thread_prefix: threadPrefix,
-    object_count: threadKeys.length,
-    keys: threadKeys.slice(0, 50),
-    current_thread_id: currentThreadId,
-    next_thread_id: nextThreadId,
-    applied: apply,
-  };
-  if (!apply) return payload;
-  for (const key of threadKeys) {
-    await deleteR2Object(profile, key);
-  }
-  if (remainingIndex.length) {
-    await putRemoteJson(profile, threadIndexKey, remainingIndex);
-  } else {
-    await deleteR2Object(profile, threadIndexKey);
-  }
-  if (currentThreadId === threadId) {
-    if (nextThreadId) {
-      await putRemoteJson(profile, currentThreadKey, { thread_id: nextThreadId });
-    } else {
-      await deleteRemoteKeysIfPresent(profile, [currentThreadKey]);
-    }
-  }
-  payload.deleted_keys = threadKeys.length;
-  payload.remaining_threads = remainingIndex.map((item) => item.thread_id);
-  return payload;
-}
-
-async function readRemoteJson(profile, key) {
-  try {
-    return JSON.parse((await getR2Object(profile, key)).toString("utf8"));
-  } catch {
-    return null;
-  }
-}
-
-async function putRemoteJson(profile, key, payload) {
-  return putR2Object(profile, key, Buffer.from(`${JSON.stringify(payload, null, 2)}\n`, "utf8"));
-}
-
-async function readRemoteThreadIndex(profile, key) {
-  const payload = await readRemoteJson(profile, key);
-  return Array.isArray(payload) ? payload.filter((item) => item && typeof item === "object") : [];
-}
-
-async function readRemoteCurrentThread(profile, key) {
-  const payload = await readRemoteJson(profile, key);
-  return payload && typeof payload.thread_id === "string" ? payload.thread_id : null;
-}
-
-async function deleteRemoteKeysIfPresent(profile, keys) {
-  const existing = new Set((await listR2Objects(profile, "")).map((item) => item.key));
-  for (const key of keys) {
-    if (existing.has(key)) {
-      await deleteR2Object(profile, key);
-    }
-  }
-}
-
 function getGitOrigin(repoPath) {
   return gitOriginUrlFromRepo(repoPath);
 }
@@ -1416,10 +1376,12 @@ function printHelp() {
       "  resume --goal <text>\n" +
       "  context-pack --goal <text>\n" +
       "  remote login r2|whoami|validate|logout\n" +
-      "  remote repos|purge-prefix|purge-thread\n" +
+      "  remote repos|purge-repo\n" +
       "  enable\n" +
       "  setup\n" +
+      "  detach\n" +
       "  uninstall\n" +
+      "  purge-local [--apply]\n" +
       "  receive\n" +
       "  threads scan|export|import|cleanup\n" +
       "  agent start|stop|status|restart|enable|disable\n" +
@@ -1431,6 +1393,30 @@ function printHelp() {
       "  --include-raw-threads   Opt in to exporting rollout.jsonl.gz archives\n" +
       "  --max-digest-threads N  Max thread summaries in memory summarize digest\n",
   );
+}
+
+function localPurgeTargets(memoryDir) {
+  const roots = materializedRootPaths(memoryDir);
+  const entries = [
+    { rel_path: ".codex-handoff/synced-threads", path: syncedThreadsDir(memoryDir) },
+    { rel_path: ".codex-handoff/local-threads", path: localThreadsDir(memoryDir) },
+    { rel_path: ".codex-handoff/threads", path: path.join(memoryDir, "threads") },
+    { rel_path: ".codex-handoff/current-thread.json", path: currentThreadPath(memoryDir) },
+    { rel_path: ".codex-handoff/thread-index.json", path: threadIndexPath(memoryDir) },
+    { rel_path: ".codex-handoff/sync-state.json", path: path.join(memoryDir, "sync-state.json") },
+    { rel_path: ".codex-handoff/memory.md", path: memoryPath(memoryDir) },
+    { rel_path: ".codex-handoff/memory-state.json", path: memoryStatePath(memoryDir) },
+    { rel_path: ".codex-handoff/latest.md", path: roots.latest },
+    { rel_path: ".codex-handoff/handoff.json", path: roots.handoff },
+    { rel_path: ".codex-handoff/transcript.md", path: roots.transcript },
+    { rel_path: ".codex-handoff/conflicts", path: path.join(memoryDir, "conflicts") },
+  ];
+  const seen = new Set();
+  return entries.filter((item) => {
+    if (!item.path || seen.has(item.path)) return false;
+    seen.add(item.path);
+    return true;
+  });
 }
 
 function cryptoRandomId() {
