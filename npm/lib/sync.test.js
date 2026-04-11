@@ -637,7 +637,7 @@ test("syncNow only uploads thread payloads when sourceDir is local-threads", asy
   }
 });
 
-test("pullRepoMemorySnapshot preserves local staging files while pruning the remote cache", async () => {
+test("pullRepoMemorySnapshot preserves local staging files and skips same-machine remote sources", async () => {
   const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-handoff-stage-preserve-repo-"));
   const memoryDir = path.join(repoDir, ".codex-handoff");
   const stageDir = path.join(memoryDir, "local-threads");
@@ -680,6 +680,7 @@ test("pullRepoMemorySnapshot preserves local staging files while pruning the rem
     remote_auth_path: "test",
     remote_prefix: "repos/project/",
   }, { repoPath: repoDir, configDir: TEST_CONFIG_DIR });
+  const localRepoState = loadRepoState(memoryDir, { repoPath: repoDir, configDir: TEST_CONFIG_DIR });
 
   const remoteObjects = new Map();
   remoteObjects.set("repos/project/machine-sources/machine-remote/threads/remote-new.jsonl", Buffer.from(`${JSON.stringify({
@@ -690,7 +691,7 @@ test("pullRepoMemorySnapshot preserves local staging files while pruning the rem
     phase: null,
     message: "remote cached thread",
   })}\n`));
-  remoteObjects.set("repos/project/machine-sources/machine-local/threads/local-owned.jsonl", Buffer.from(`${JSON.stringify({
+  remoteObjects.set(`repos/project/machine-sources/${localRepoState.machine_id}/threads/local-owned.jsonl`, Buffer.from(`${JSON.stringify({
     session_id: "local-owned",
     turn_id: "turn-1",
     timestamp: null,
@@ -714,11 +715,11 @@ test("pullRepoMemorySnapshot preserves local staging files while pruning the rem
 
   try {
     const result = await freshSync.pullRepoMemorySnapshot(repoDir, memoryDir, { fake: true }, loadRepoState(memoryDir, { repoPath: repoDir, configDir: TEST_CONFIG_DIR }), { codexHome });
-    assert.equal(result.imported_thread.thread_id, "local-owned");
+    assert.equal(result.imported_thread.thread_id, "remote-new");
     assert.equal(fs.existsSync(path.join(readDir, "threads", "remote-new.jsonl")), true);
-    assert.equal(fs.existsSync(path.join(readDir, "threads", "local-owned.jsonl")), true);
-    assert.equal(JSON.parse(fs.readFileSync(path.join(readDir, "current-thread.json"), "utf8")).thread_id, "local-owned");
-    assert.equal(JSON.parse(fs.readFileSync(path.join(readDir, "thread-index.json"), "utf8")).length, 2);
+    assert.equal(fs.existsSync(path.join(readDir, "threads", "local-owned.jsonl")), false);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(readDir, "current-thread.json"), "utf8")).thread_id, "remote-new");
+    assert.equal(JSON.parse(fs.readFileSync(path.join(readDir, "thread-index.json"), "utf8")).length, 1);
     assert.equal(fs.existsSync(path.join(memoryDir, "memory.md")), false);
     assert.equal(fs.existsSync(path.join(memoryDir, "memory-state.json")), false);
     assert.equal(fs.existsSync(path.join(readDir, "threads", "old-remote.jsonl")), false);

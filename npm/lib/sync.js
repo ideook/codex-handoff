@@ -345,13 +345,13 @@ async function deleteRemoteKeyIfPresent(profile, key) {
   }
 }
 
-async function pullMemoryTree(profile, memoryDir, prefix) {
+async function pullMemoryTree(profile, memoryDir, prefix, { excludeMachineId = null } = {}) {
   const downloaded = [];
   const remotePaths = new Set();
   const normalizedPrefix = prefix.replace(/\/+$/, "") + "/";
   for (const item of await listR2Objects(profile, normalizedPrefix)) {
     const key = item.key;
-    const relPath = localRelPathForRemoteKey(key, normalizedPrefix);
+    const relPath = localRelPathForRemoteKey(key, normalizedPrefix, { excludeMachineId });
     if (!relPath) {
       continue;
     }
@@ -497,13 +497,16 @@ function remoteKeyForRelPath(normalizedPrefix, relPath, machineId, { sourceIsPus
   return `${normalizedPrefix}/${normalizedRelPath}`;
 }
 
-function localRelPathForRemoteKey(key, normalizedPrefix) {
+function localRelPathForRemoteKey(key, normalizedPrefix, { excludeMachineId = null } = {}) {
   const relPath = key.slice(normalizedPrefix.length);
   if (!relPath.startsWith("machine-sources/")) {
     return null;
   }
   const parts = relPath.split("/");
   if (parts.length < 4) {
+    return null;
+  }
+  if (excludeMachineId && parts[1] === excludeMachineId) {
     return null;
   }
   const localRelPath = parts.slice(2).join("/");
@@ -588,10 +591,12 @@ async function pullRepoMemorySnapshot(repoPath, memoryDir, profile, repoState, {
   const targetPrefixes = syncTargetPrefixes(repoState, repoState.remote_prefix);
   const pullTarget = await selectPullPrefix(profile, targetPrefixes);
   const selectedPrefix = pullTarget.selected_prefix || repoState.remote_prefix;
-  const downloaded = await pullMemoryTree(profile, targetDir, selectedPrefix);
-    const pulledRepoState = pullTarget.selected_candidate?.repo_state || loadRepoState(memoryDir, { repoPath });
-    const localizedRepoState = relocalizeRepoState(repoPath, pulledRepoState, repoState);
-    saveRepoState(memoryDir, localizedRepoState, { repoPath });
+  const downloaded = await pullMemoryTree(profile, targetDir, selectedPrefix, {
+    excludeMachineId: repoState.machine_id || null,
+  });
+  const pulledRepoState = pullTarget.selected_candidate?.repo_state || loadRepoState(memoryDir, { repoPath });
+  const localizedRepoState = relocalizeRepoState(repoPath, pulledRepoState, repoState);
+  saveRepoState(memoryDir, localizedRepoState, { repoPath });
   rebuildReadContextMetadata(targetDir);
   let threadId = thread;
   if (!threadId && fs.existsSync(currentThreadPath(targetDir))) {

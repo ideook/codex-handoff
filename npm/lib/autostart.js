@@ -4,6 +4,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const { withHiddenWindows } = require("./child-process");
+const { writeUtf8FileIfChanged } = require("./file-ops");
 const { configPath, readJsonFile, resolveConfigDir, runtimeDir } = require("../service/common");
 
 const WINDOWS_TASK_NAME = "codex-handoff-agent";
@@ -169,18 +170,11 @@ function windowsAutostartStatus(configDir) {
 }
 
 function enableMacosAutostart({ codexHome, configDir }) {
-  const scriptPath = writeMacosAutostartScript({ codexHome, configDir });
+  const scriptResult = writeMacosAutostartScript({ codexHome, configDir });
+  const scriptPath = scriptResult.script_path;
   const plistPath = launchAgentPlistPath();
   fs.mkdirSync(path.dirname(plistPath), { recursive: true });
-  const plist = `<?xml version="1.0" encoding="UTF-8"?>\n` +
-    `<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n` +
-    `<plist version="1.0"><dict>` +
-    `<key>Label</key><string>${xmlEscape(MACOS_LABEL)}</string>` +
-    `<key>ProgramArguments</key><array><string>${xmlEscape(scriptPath)}</string></array>` +
-    `<key>RunAtLoad</key><true/>` +
-    `<key>ProcessType</key><string>Background</string>` +
-    `</dict></plist>\n`;
-  fs.writeFileSync(plistPath, plist, "utf8");
+  const plistChanged = writeUtf8FileIfChanged(plistPath, buildMacosLaunchAgentPlist(scriptPath));
   return {
     task_name: MACOS_LABEL,
     launch_agent_path: plistPath,
@@ -189,6 +183,8 @@ function enableMacosAutostart({ codexHome, configDir }) {
     method: "launchd",
     platform: "macos",
     platform_supported: true,
+    script_changed: scriptResult.changed,
+    launch_agent_changed: plistChanged,
   };
 }
 
@@ -243,20 +239,13 @@ function writeWindowsAutostartScript({ codexHome, configDir }) {
 
 function writeMacosAutostartScript({ codexHome, configDir }) {
   const scriptPath = macosCommandScriptPath(configDir);
-  const logPath = autostartLogPath(configDir);
-  fs.mkdirSync(path.dirname(scriptPath), { recursive: true });
-  fs.mkdirSync(path.dirname(logPath), { recursive: true });
-  const command = buildAgentServiceCommand({ configDir, codexHome });
-  const lines = [
-    "#!/bin/sh",
-    `export CODEX_HANDOFF_CONFIG_DIR=${shellQuote(configDir)}`,
-    `export CODEX_HOME=${shellQuote(codexHome)}`,
-    `exec ${command.map((part) => shellQuote(part)).join(" ")} >> ${shellQuote(logPath)} 2>&1`,
-    "",
-  ];
-  fs.writeFileSync(scriptPath, lines.join("\n"), "utf8");
-  fs.chmodSync(scriptPath, 0o755);
-  return scriptPath;
+  const body = buildMacosAutostartScriptBody({ codexHome, configDir });
+  const changed = writeUtf8FileIfChanged(scriptPath, body);
+  ensureExecutableMode(scriptPath, 0o755);
+  return {
+    script_path: scriptPath,
+    changed,
+  };
 }
 
 function buildAgentServiceCommand({ configDir, codexHome }) {
@@ -303,6 +292,44 @@ function xmlEscape(value) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+function buildMacosAutostartScriptBody({ codexHome, configDir }) {
+  const logPath = autostartLogPath(configDir);
+  fs.mkdirSync(path.dirname(logPath), { recursive: true });
+  const command = buildAgentServiceCommand({ configDir, codexHome });
+  return [
+    "#!/bin/sh",
+    `export CODEX_HANDOFF_CONFIG_DIR=${shellQuote(configDir)}`,
+    `export CODEX_HOME=${shellQuote(codexHome)}`,
+    `exec ${command.map((part) => shellQuote(part)).join(" ")} >> ${shellQuote(logPath)} 2>&1`,
+    "",
+  ].join("\n");
+}
+
+function buildMacosLaunchAgentPlist(scriptPath) {
+  return `<?xml version="1.0" encoding="UTF-8"?>\n` +
+    `<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n` +
+    `<plist version="1.0"><dict>` +
+    `<key>Label</key><string>${xmlEscape(MACOS_LABEL)}</string>` +
+    `<key>ProgramArguments</key><array><string>${xmlEscape(scriptPath)}</string></array>` +
+    `<key>RunAtLoad</key><true/>` +
+    `<key>ProcessType</key><string>Background</string>` +
+    `</dict></plist>\n`;
+}
+
+function ensureExecutableMode(filePath, mode) {
+  const normalizedMode = mode & 0o777;
+  try {
+    const currentMode = fs.statSync(filePath).mode & 0o777;
+    if (currentMode === normalizedMode) {
+      return false;
+    }
+  } catch {
+    // Fall through and try to set the requested mode.
+  }
+  fs.chmodSync(filePath, normalizedMode);
+  return true;
 }
 
 module.exports = {
