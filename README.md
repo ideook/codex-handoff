@@ -17,21 +17,17 @@ command center for agentic coding." Download and learn more at
 [openai.com/codex](https://openai.com/codex/) or read
 [Introducing the Codex app](https://openai.com/index/introducing-the-codex-app/).
 
-## Why
-
-- repo-scoped instead of one giant session pool
-- built for one-person, cross-machine handoff
-- background sync while Codex is open
-- thread payloads preserved separately under `.codex-handoff/synced-threads/` and `.codex-handoff/local-threads/`
-- Cloudflare R2 support out of the box
-
 ## Start With Codex
 
-The easiest way to use `codex-handoff` is to tell Codex what you want in plain
-language.
+`codex-handoff` is built for repo-scoped, one-person handoff across machines.
+It keeps pulled thread state under `.codex-handoff/synced-threads/`, keeps
+local pushable thread state under `.codex-handoff/local-threads/`, and can run
+background sync while Codex is open.
 
 Open the Codex app in the project you want to manage, make sure that project is
 the current workspace/cwd, and paste one of these prompts into the Codex chat.
+Use the same setup-and-start prompt on another PC. Plain `setup` already
+decides whether this repo should pull remote state or push local state.
 
 Install if needed, then set up and start:
 
@@ -51,27 +47,6 @@ Set up this repo without starting the agent yet:
 
 ```text
 Set up codex-handoff sync for this repository, but do not start the agent yet.
-```
-
-Use the same setup-and-start prompt on another PC. `codex-handoff setup`
-chooses pull or push automatically for the current repo state.
-
-Run a one-shot sync:
-
-```text
-Sync this repository with codex-handoff.
-```
-
-Enable background sync:
-
-```text
-Enable codex-handoff push automation for this repository.
-```
-
-Detach this repo:
-
-```text
-Remove codex-handoff from this repository.
 ```
 
 ## Remote Backend
@@ -95,10 +70,29 @@ codex-handoff remote login r2 --dotenv ./.codex-handoff/.env.local
 codex-handoff setup
 ```
 
-## How It Works
+## Common Tasks
 
-`codex-handoff` keeps three main kinds of runtime state plus optional derived
-artifacts:
+- Set up one repo and start background sync.
+  Use a Codex prompt or run `codex-handoff setup`.
+- Run a one-shot sync without relying on the background agent.
+  Use `codex-handoff sync now`.
+- Inspect or rebuild repo context when you need to understand current handoff
+  state.
+  Use `codex-handoff status`, `codex-handoff sync status`,
+  `codex-handoff resume`, and `codex-handoff search`.
+- Stop managing the current repo without deleting its cached data.
+  Use `codex-handoff detach`.
+- Remove local handoff files from `.codex-handoff/` while keeping credentials.
+  Use `codex-handoff purge-local` and `codex-handoff purge-local --apply`.
+- Delete one repo's remote backup from Cloudflare R2.
+  Use `codex-handoff remote purge-repo --repo-slug <slug>` and add `--apply`
+  to execute it.
+- Stop or disable the background service on this machine.
+  Use `codex-handoff agent stop` and `codex-handoff agent disable`.
+
+## What It Stores
+
+The repo-local state is intentionally simple:
 
 - `.codex-handoff/synced-threads/`
   pulled thread payloads used for default restore reads, including
@@ -111,52 +105,9 @@ artifacts:
   manually generated repo memory artifacts that are not part of the default
   bootstrap read path
 
-Background sync is driven by a global watcher:
-
-- it watches `~/.codex/sessions/**`
-- routes rollout changes to the matching repo using `session_meta.payload.cwd`
-- writes producer-side thread updates into `.codex-handoff/local-threads/`
-- pushes local thread payloads to the configured remote prefix
-- keeps running while the Codex app process is alive, including background window-hidden states
-- keeps pulled remote thread state under `.codex-handoff/synced-threads/` as the default thread read cache
-
-Restore read flow:
-
-- Producer PC watches Codex rollout changes and extracts deterministic thread
-  bundles into `.codex-handoff/local-threads/threads/` without using AI.
-- Producer PC does not summarize repo memory during conversation or shutdown.
-- Producer shutdown does not rewrite `.codex-handoff/local-threads/`.
-- Explicit pull flows materialize remote thread state under
-  `.codex-handoff/synced-threads/`.
-- New Codex sessions should start with
-  `.codex-handoff/synced-threads/current-thread.json`.
-- Use `.codex-handoff/synced-threads/thread-index.json` to choose a specific
-  bundle under `.codex-handoff/synced-threads/threads/` when broader context
-  is needed.
-- Default bootstrap reads do not depend on root `.codex-handoff/memory.md`.
-- Producer-side staged thread payloads are not part of the default bootstrap
-  read path.
-
-## Primary Commands
-
-- `setup`
-  bootstrap or reconcile a repo
-- `receive`
-  restore synced work on another machine
-- `status`
-  inspect local handoff state
-- `resume`
-  build a restore pack from local handoff state
-- `search`
-  search raw handoff evidence
-- `sync now`
-  perform a one-shot export and push
-- `uninstall`
-  detach the repo from codex-handoff management
-
-Optional manual memory commands remain available, but they are not part of the
-default bootstrap flow. For the full command surface, see
-[docs/command-reference.md](docs/command-reference.md).
+Default restore reads stay inside `.codex-handoff/synced-threads/`. Start with
+`current-thread.json`, then use `thread-index.json` to decide which specific
+bundle under `threads/` to inspect next.
 
 ## Docs
 
